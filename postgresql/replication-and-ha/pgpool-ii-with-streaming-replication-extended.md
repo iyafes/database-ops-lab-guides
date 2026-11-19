@@ -1354,7 +1354,7 @@ sudo -u postgres pg_enc -m -f /etc/pgpool2/pgpool.conf -k /var/lib/postgresql/.p
 sudo cat /etc/pgpool2/pool_passwd
 ```
 
-`appuser_bi:AES...` দেখালে ✅
+`appuser_bi:AES...` is shown ✅
 
 **Restart PgPool:**
 
@@ -1370,7 +1370,7 @@ psql -h 172.16.93.134 -p 9999 -U appuser_bi -d tsl_dba
 
 Password: `<BI_APP_USER_PASSWORD>`
 
-Connect হলে ✅
+Connect succeeds ✅
 
 ---
 

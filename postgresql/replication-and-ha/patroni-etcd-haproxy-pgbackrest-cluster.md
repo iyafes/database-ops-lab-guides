@@ -2420,7 +2420,7 @@ sudo systemctl start patroni
 
 ## Optional — Percona PMM Monitoring
 
-Percona PMM (Percona Monitoring and Management) একটা open-source monitoring platform যেটা PostgreSQL, OS metrics (CPU/RAM/disk/network), এবং query analytics একসাথে দেখায়। এই setup এ একটা dedicated server এ PMM Server চলবে এবং বাকি সব nodes এ PMM Client চলবে।
+Percona PMM (Percona Monitoring and Management) is an open-source monitoring platform that shows PostgreSQL, OS metrics (CPU/RAM/disk/network) and query analytics together. In this setup, PMM Server runs on a dedicated server and PMM Client runs on all the other nodes.
 
 ### Architecture
 
@@ -2431,22 +2431,22 @@ pnode5  (172.16.93.144) ── pmm-client ──┤
 haproxy (172.16.93.139) ── pmm-client ──┘
 ```
 
-- **PMM Server** — Docker container হিসেবে চলে, সব metrics store করে, web UI দেয়
-- **PMM Client** — প্রতিটা node এ চলে, metrics collect করে server এ push করে
+- **PMM Server** — runs as a Docker container, stores all metrics, serves the web UI
+- **PMM Client** — runs on every node, collects metrics and pushes them to the server
 
 ### Port Reference
 
-| Port | ব্যবহার |
+| Port | Purpose |
 |------|---------|
 | 80 | PMM Web UI (HTTP) |
 | 443 | PMM Web UI (HTTPS) |
 | 8443 | PMM Client → Server metrics push (gRPC) |
 
-> ⚠️ **8443 port অবশ্যই expose করতে হবে।** এটা না থাকলে client registration হবে কিন্তু metrics পাঠাতে পারবে না।
+> ⚠️ **Port 8443 must be exposed.** Without it, client registration succeeds but the clients cannot send metrics.
 
 ---
 
-## Part 1 — PMM Server Setup (pmm node এ)
+## Part 1 — PMM Server Setup (on the pmm node)
 
 ### Step 1 — /etc/hosts Update
 
@@ -2460,7 +2460,7 @@ sudo tee -a /etc/hosts <<EOF
 EOF
 ```
 
-### Step 2 — Firewall Ports খোলো
+### Step 2 — Open the Firewall Ports
 
 ```bash
 sudo firewall-cmd --permanent --add-port=80/tcp
@@ -2472,54 +2472,54 @@ sudo firewall-cmd --reload
 **Verify:**
 ```bash
 sudo firewall-cmd --list-ports
-# Output এ: 80/tcp 443/tcp 8443/tcp
+# Output shows: 80/tcp 443/tcp 8443/tcp
 ```
 
 ### Step 3 — Docker Install
 
 ```bash
-# Docker official repo add করো
+# Add the official Docker repo
 sudo dnf config-manager --add-repo \
   https://download.docker.com/linux/rhel/docker-ce.repo
 
-# Docker install করো
+# Install Docker
 sudo dnf install -y docker-ce docker-ce-cli containerd.io \
   docker-buildx-plugin docker-compose-plugin
 
-# Docker start এবং enable করো
+# Start and enable Docker
 sudo systemctl enable --now docker
 
-# Current user কে docker group এ add করো (sudo ছাড়া docker চালাতে)
+# Add the current user to the docker group (to run docker without sudo)
 sudo usermod -aG docker $USER
 ```
 
-**⚠️ Group change কার্যকর হতে re-login করতে হবে:**
+**⚠️ The group change takes effect only after you log in again:**
 ```bash
 exit
-# আবার login করো
+# Log in again
 ssh pmm@172.16.93.145
 ```
 
 **Verify:**
 ```bash
 docker --version
-# Docker version 2x.x দেখাবে
+# Shows Docker version 2x.x
 
 sudo systemctl status docker
 # Active: active (running)
 ```
 
-### Step 4 — PMM Data Volume তৈরি করো
+### Step 4 — Create the PMM Data Volume
 
-PMM এর সব data (metrics, dashboards, config) এই volume এ store হবে। Container delete বা update করলেও data থাকবে।
+All PMM data (metrics, dashboards, config) is stored in this volume, so it survives deleting or updating the container.
 
 ```bash
 docker volume create pmm-data
 ```
 
-**কেন named volume?** Docker এর modern best practice হলো named volume ব্যবহার করা। এটা manage করা সহজ এবং `docker volume inspect pmm-data` দিয়ে যেকোনো সময় details দেখা যায়।
+**Why a named volume?** Named volumes are Docker's modern best practice. They are easy to manage, and `docker volume inspect pmm-data` shows the details at any time.
 
-### Step 5 — PMM Server Container চালাও
+### Step 5 — Run the PMM Server Container
 
 ```bash
 docker run --detach \
@@ -2532,47 +2532,47 @@ docker run --detach \
   percona/pmm-server:2
 ```
 
-**Parameter গুলো কী করছে:**
-- `--detach` — background এ চলবে
-- `--restart always` — server reboot হলে automatically container উঠবে
+**What the parameters do:**
+- `--detach` — runs in the background
+- `--restart always` — the container starts automatically after a server reboot
 - `--publish 80:80` — host port → container port forward
-- `--publish 8443:8443` — client metrics push এর জন্য, এটা অবশ্যই লাগবে
-- `--volume pmm-data:/srv` — data volume mount করছে `/srv` এ
+- `--publish 8443:8443` — for clients to push metrics; this one is required
+- `--volume pmm-data:/srv` — mounts the data volume at `/srv`
 
-**Verify container চলছে কিনা:**
+**Verify the container is running:**
 ```bash
 docker ps
-# STATUS: Up দেখাবে
-# PORTS এ: 0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp, 0.0.0.0:8443->8443/tcp
+# STATUS shows: Up
+# PORTS shows: 0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp, 0.0.0.0:8443->8443/tcp
 ```
 
-Container উঠতে ৩০-৬০ seconds লাগতে পারে।
+The container can take 30-60 seconds to come up.
 
-**Browser থেকে access করো:**
+**Access it from a browser:**
 
-`http://172.16.93.145` খোলো।
+Open `http://172.16.93.145`.
 
 Default credentials:
 - Username: `admin`
 - Password: `admin`
 
-Login করলে password change করতে বলবে — একটা strong password দাও এবং মনে রেখো, পরের সব steps এ লাগবে।
+After login it asks you to change the password. Set a strong one and remember it; every later step needs it.
 
-> ⚠️ **Common mistake:** অনেকে `8443` port publish করতে ভুলে যান। যদি container আগে `8443` ছাড়া চালানো হয়ে থাকে, তাহলে container recreate করতে হবে:
+> ⚠️ **Common mistake:** many people forget to publish port `8443`. If the container was started without `8443`, recreate it:
 > ```bash
 > docker stop pmm-server
 > docker rm pmm-server
-> # তারপর উপরের docker run command আবার চালাও
-> # pmm-data volume আলাদা থাকায় সব data ও settings থাকবে
+> # then run the docker run command above again
+> # the pmm-data volume is separate, so all data and settings are kept
 > ```
 
 ---
 
-## Part 2 — PMM Client Setup (pnode1, pnode4, pnode5, haproxy — সব nodes এ)
+## Part 2 — PMM Client Setup (pnode1, pnode4, pnode5, haproxy — all nodes)
 
-এই পুরো Part এর সব steps চারটা node এ আলাদা আলাদা করে করতে হবে।
+Every step in this Part must be done separately on each of the four nodes.
 
-### Step 6 — /etc/hosts Update (সব client nodes এ)
+### Step 6 — Update /etc/hosts (on all client nodes)
 
 ```bash
 sudo tee -a /etc/hosts <<EOF
@@ -2584,13 +2584,13 @@ sudo tee -a /etc/hosts <<EOF
 EOF
 ```
 
-### Step 7 — PMM Client Install (সব client nodes এ)
+### Step 7 — Install the PMM Client (on all client nodes)
 
 ```bash
-# Percona official repo add করো
+# Add the official Percona repo
 sudo dnf install -y https://repo.percona.com/yum/percona-release-latest.noarch.rpm
 
-# PMM Client install করো
+# Install the PMM Client
 sudo dnf install -y pmm-client
 ```
 
@@ -2599,9 +2599,9 @@ sudo dnf install -y pmm-client
 pmm-admin --version
 ```
 
-### Step 8 — PMM Server এ Register করো (সব client nodes এ)
+### Step 8 — Register with the PMM Server (on all client nodes)
 
-এই command দিয়ে node নিজেকে PMM Server এ register করে। Registration এর সাথে সাথে `node_exporter` এবং `vmagent` automatically চালু হয়ে যায় — এগুলো আলাদা করে add করতে হয় না।
+This command registers the node with the PMM Server. On registration, `node_exporter` and `vmagent` start automatically; they do not need to be added separately.
 
 ```bash
 sudo pmm-admin config \
@@ -2609,30 +2609,30 @@ sudo pmm-admin config \
   --server-url=https://admin:YOUR_PASSWORD@172.16.93.145:443
 ```
 
-`YOUR_PASSWORD` এর জায়গায় Step 5 এ set করা password দাও।
+Replace `YOUR_PASSWORD` with the password set in Step 5.
 
-**`--server-insecure-tls` কেন?** PMM Server self-signed TLS certificate ব্যবহার করে। এই flag না দিলে client TLS verify করতে গিয়ে connection reject করবে।
+**Why `--server-insecure-tls`?** The PMM Server uses a self-signed TLS certificate. Without this flag, the client tries to verify TLS and rejects the connection.
 
 **Verify:**
 ```bash
 sudo pmm-admin status
-# Server address, Node name, Node ID, এবং Connected status দেখাবে
+# Shows the server address, node name, node ID and Connected status
 ```
 
 ---
 
 ## Part 3 — PostgreSQL Monitoring Setup
 
-### Step 9 — PMM Monitoring User তৈরি করো (একবার, primary তে)
+### Step 9 — Create the PMM Monitoring User (once, on the primary)
 
-PMM এর জন্য একটা dedicated read-only user দরকার। এটা শুধু একবার করতে হবে — Patroni replication এর মাধ্যমে সব nodes এ automatically চলে যাবে।
+PMM needs a dedicated read-only user. This is done only once; Patroni replication carries it to all nodes automatically.
 
-**যেকোনো node থেকে HAProxy দিয়ে primary তে connect করো:**
+**Connect to the primary through HAProxy from any node:**
 ```bash
 psql -h 172.16.93.139 -p 5000 -U postgres
 ```
 
-**psql এ ঢুকে:**
+**Inside psql:**
 ```sql
 CREATE USER pmm_monitor WITH PASSWORD 'YOUR_MONITOR_PASSWORD';
 ALTER USER pmm_monitor CONNECTION LIMIT 10;
@@ -2640,41 +2640,41 @@ GRANT pg_monitor TO pmm_monitor;
 \q
 ```
 
-**কেন আলাদা user?** `postgres` superuser দিয়ে monitoring করা security risk। `pg_monitor` role টা PostgreSQL এ built-in read-only monitoring role — statistics দেখতে পারবে কিন্তু কোনো data change করতে পারবে না।
+**Why a separate user?** Monitoring with the `postgres` superuser is a security risk. `pg_monitor` is a built-in read-only monitoring role in PostgreSQL: it can read statistics but cannot change any data.
 
-### Step 10 — pg_stat_statements Extension Enable করো
+### Step 10 — Enable the pg_stat_statements Extension
 
-PMM এর Query Analytics feature এর জন্য `pg_stat_statements` extension দরকার। এটা ছাড়া `postgresql_pgstatements_agent` `Waiting` state এ থাকবে।
+PMM's Query Analytics feature needs the `pg_stat_statements` extension. Without it, `postgresql_pgstatements_agent` stays in the `Waiting` state.
 
-**Patroni দিয়ে cluster-wide config update করো — যেকোনো node থেকে:**
+**Update the cluster-wide config through Patroni, from any node:**
 ```bash
 patronictl -c /etc/patroni/patroni.yml edit-config
 ```
 
-`parameters:` section এ add করো:
+Add to the `parameters:` section:
 ```yaml
 shared_preload_libraries: 'pg_stat_statements'
 ```
 
-> ⚠️ যদি `shared_preload_libraries` আগে থেকে থাকে এবং অন্য value থাকে, replace করো না — comma দিয়ে append করো:
+> ⚠️ If `shared_preload_libraries` already exists with other values, do not replace it; append with a comma:
 > ```yaml
 > shared_preload_libraries: 'existing_extension,pg_stat_statements'
 > ```
 
-Save করে বের হও। `shared_preload_libraries` change করলে PostgreSQL restart লাগে:
+Save and exit. Changing `shared_preload_libraries` requires a PostgreSQL restart:
 
 ```bash
 patronictl -c /etc/patroni/patroni.yml restart postgres-cluster
 ```
 
-**Restart এর পর extension create করো — primary তে:**
+**After the restart, create the extension, on the primary:**
 ```bash
 psql -h 172.16.93.139 -p 5000 -U postgres -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;"
 ```
 
-### Step 11 — PostgreSQL Service Add করো (db nodes এ)
+### Step 11 — Add the PostgreSQL Service (on the db nodes)
 
-**pnode1 এ:**
+**On pnode1:**
 ```bash
 sudo pmm-admin add postgresql \
   --username=pmm_monitor \
@@ -2684,7 +2684,7 @@ sudo pmm-admin add postgresql \
   --service-name=pnode1-postgresql
 ```
 
-**pnode4 এ:**
+**On pnode4:**
 ```bash
 sudo pmm-admin add postgresql \
   --username=pmm_monitor \
@@ -2694,7 +2694,7 @@ sudo pmm-admin add postgresql \
   --service-name=pnode4-postgresql
 ```
 
-**pnode5 এ:**
+**On pnode5:**
 ```bash
 sudo pmm-admin add postgresql \
   --username=pmm_monitor \
@@ -2704,9 +2704,9 @@ sudo pmm-admin add postgresql \
   --service-name=pnode5-postgresql
 ```
 
-প্রতিটা node এ নিজের IP এবং নিজের service-name দাও। `--host` এ অবশ্যই সেই node এর নিজের IP দিতে হবে — HAProxy IP দিলে হবে না।
+On each node, use its own IP and its own service name. `--host` must be that node's own IP; using the HAProxy IP will not work.
 
-### Step 12 — HAProxy Monitoring Add করো (haproxy node এ)
+### Step 12 — Add HAProxy Monitoring (on the haproxy node)
 
 ```bash
 sudo pmm-admin add haproxy \
@@ -2714,19 +2714,19 @@ sudo pmm-admin add haproxy \
   --service-name=haproxy
 ```
 
-**কেন port 7000?** HAProxy stats dashboard port 7000 এ চলে — PMM এই port থেকে HAProxy metrics scrape করে।
+**Why port 7000?** The HAProxy stats dashboard runs on port 7000; PMM scrapes HAProxy metrics from it.
 
 ---
 
 ## Part 4 — Verification
 
-### Step 13 — Client Side Verify (প্রতিটা node এ)
+### Step 13 — Verify on the Client Side (on every node)
 
 ```bash
 sudo pmm-admin list
 ```
 
-Expected output (pnode1 এর উদাহরণ):
+Expected output (example from pnode1):
 ```
 Service type   Service name          Address and port    Service ID
 PostgreSQL     pnode1-postgresql     172.16.93.136:5432  /service_id/xxx
@@ -2739,33 +2739,33 @@ postgresql_pgstatements_agent   Running
 vmagent                         Running   push
 ```
 
-সব agents এর Status `Running` এবং pmm_agent `Connected` দেখালে ঠিক আছে।
+All agents should show Status `Running` and pmm_agent `Connected`.
 
-> **`postgresql_pgstatements_agent` যদি `Waiting` দেখায়:** Step 10 এ `pg_stat_statements` enable হয়নি বা extension create হয়নি। সেই steps আবার করো।
+> **If `postgresql_pgstatements_agent` shows `Waiting`:** `pg_stat_statements` was not enabled in Step 10 or the extension was not created. Redo those steps.
 
-> **`node_exporter` আলাদা করে add করতে হয় না** — `pmm-admin config` করার সময়ই automatically চালু হয়ে যায়।
+> **`node_exporter` does not need to be added separately.** It starts automatically during `pmm-admin config`.
 
-### Step 14 — Browser থেকে Verify
+### Step 14 — Verify in the Browser
 
-`http://172.16.93.145` এ login করো।
+Log in at `http://172.16.93.145`.
 
-- **PMM → Inventory → Nodes** — সব registered nodes দেখাবে (pnode1, pnode4, pnode5, haproxy)
-- **PMM → Inventory → Services** — সব PostgreSQL services দেখাবে
-- **PMM → Inventory → Agents** — সব agents এর status দেখাবে
-- **Node Dashboard** — CPU, RAM, disk, network metrics দেখাবে
-- **PostgreSQL → Query Analytics** — queries দেখাতে কিছুক্ষণ সময় লাগে, ৫ মিনিট পর check করো
+- **PMM → Inventory → Nodes** — shows all registered nodes (pnode1, pnode4, pnode5, haproxy)
+- **PMM → Inventory → Services** — shows all PostgreSQL services
+- **PMM → Inventory → Agents** — shows the status of all agents
+- **Node Dashboard** — shows CPU, RAM, disk and network metrics
+- **PostgreSQL → Query Analytics** — queries take a while to appear; check after 5 minutes
 
 ---
 
 ### Quick Reference — PMM Commands
 
 ```bash
-# PMM Server (pmm node এ)
-docker ps                              # container status দেখো
-docker logs pmm-server                 # server logs দেখো
-docker restart pmm-server              # server restart করো
+# PMM Server (on the pmm node)
+docker ps                              # check container status
+docker logs pmm-server                 # view server logs
+docker restart pmm-server              # restart the server
 
-# PMM Server update করো (data যাবে না)
+# Update the PMM Server (data is kept)
 docker pull percona/pmm-server:2
 docker stop pmm-server && docker rm pmm-server
 docker run --detach --restart always \
@@ -2773,14 +2773,14 @@ docker run --detach --restart always \
   --name pmm-server --volume pmm-data:/srv \
   percona/pmm-server:2
 
-# PMM Client (db nodes এ)
-sudo pmm-admin status                  # connection status দেখো
-sudo pmm-admin list                    # registered services দেখো
+# PMM Client (on the db nodes)
+sudo pmm-admin status                  # check connection status
+sudo pmm-admin list                    # list registered services
 
-# Service remove করতে
+# Remove a service
 sudo pmm-admin remove postgresql pnode1-postgresql
 
-# Service আবার add করতে
+# Add a service again
 sudo pmm-admin add postgresql \
   --username=pmm_monitor \
   --password=YOUR_MONITOR_PASSWORD \

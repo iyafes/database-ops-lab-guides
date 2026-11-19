@@ -1,0 +1,31 @@
+# Two-host lab for the MariaDB remote-backup guide.
+# Each "host" is a privileged container running its own Docker daemon (Docker-in-Docker),
+# so the source host can run MariaDB in a container exactly like a real VM would.
+# LAB ONLY: privileged containers. Run on a disposable lab machine, never on a shared host.
+name: mariadb-backup-lab
+
+services:
+  source-host:
+    build: ./source
+    container_name: lab-source-db
+    hostname: source-db
+    privileged: true
+    networks:
+      lab:
+        ipv4_address: 192.168.50.10
+
+  backup-host:
+    build: ./backup
+    container_name: lab-backup-host
+    hostname: backup-host
+    privileged: true
+    networks:
+      lab:
+        ipv4_address: 192.168.50.20
+
+networks:
+  lab:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.50.0/24

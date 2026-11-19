@@ -4,35 +4,35 @@
 
 ---
 
-> **এই document টা শুধু তোমার জন্য।**
-> প্রতিটা step এ কী হচ্ছে, কেন হচ্ছে, কোথায় সতর্ক থাকতে হবে — সব বিস্তারিত আছে।
-> যেখানে তোমার specific value দরকার সেখানে `<এইভাবে>` placeholder আছে — run করার আগে অবশ্যই replace করতে হবে।
+> **This document is written as a working guide for one operator.**
+> Every step explains what is happening, why, and where to be careful, in full detail.
+> Wherever a value specific to your environment is needed, a `<like-this>` placeholder is used. Replace it before you run anything.
 
 ---
 
-## ⚠️ Migration সম্পর্কে একটা Critical কথা আগে
+## ⚠️ A Critical Note About the Migration First
 
-তোমার combined server এ চলছে **PostgreSQL 18**, নতুন server এ install হবে **PostgreSQL 17**। এটা একটা **major version downgrade**।
+Your combined server runs **PostgreSQL 18**, and the new server will have **PostgreSQL 17** installed. This is a **major version downgrade**.
 
-PostgreSQL এ `pg_upgrade` tool দিয়ে upgrade করা যায়, কিন্তু **downgrade করা যায় না**। তাই এখানে একমাত্র safe method হলো:
+PostgreSQL can be upgraded with the `pg_upgrade` tool, but it **cannot be downgraded**. So the only safe method here is:
 
 ```
-pg_dump (PG18 থেকে SQL বের করো)
+pg_dump (export SQL from PG18)
        ↓
 transfer to new server
        ↓
-pg_restore (PG17 তে restore করো)
+pg_restore (restore into PG17)
 ```
 
-এই method এ:
-- ✅ কোনো data loss নেই
-- ✅ Downtime controlled — তুমি ঠিক করো কখন নামাবে
-- ✅ Rollback সহজ — combined server এর DB কখনো বন্ধ করা হয় না migration এর সময়
-- ⚠️ PG 18-specific কোনো feature বা syntax use হলে restore এ error আসতে পারে — Senior DBA কে আগে জিজ্ঞেস করো
+With this method:
+- ✅ No data loss
+- ✅ Downtime is controlled: you decide when to take the app down
+- ✅ Rollback is easy: the combined server's DB is never stopped during the migration
+- ⚠️ If any PG 18-specific feature or syntax is used, the restore may fail with errors. Ask the Senior DBA first
 
 ---
 
-## পুরো কাজের ধারা (Overview)
+## The Whole Workflow (Overview)
 
 ```
 Part A — New DB Server Setup
@@ -59,22 +59,22 @@ New server ready ✓
 
 Part B — Migration (Downtime Window)
 ──────────────────────────────────────
-[Downtime শুরু]
-Combined server এ app containers বন্ধ
+[Downtime starts]
+Stop app containers on the combined server
        ↓
-Combined server এ final pg_dump
+Final pg_dump on the combined server
        ↓
-Dump file new server এ transfer
+Transfer the dump file to the new server
        ↓
-New server এ restore
+Restore on the new server
        ↓
 Data verify
        ↓
-Backend team connection string update করে
+Backend team updates the connection string
        ↓
-Application উঠিয়ে test
+Bring the application up and test
        ↓
-[Downtime শেষ]
+[Downtime ends]
 ```
 
 ---
@@ -83,11 +83,11 @@ Application উঠিয়ে test
 
 ---
 
-## ধাপ ১ — Repository Add করা
+## Step 1 — Add the Repository
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-Rocky Linux 9 এর default repo তে PostgreSQL এর পুরনো version থাকে। PostgreSQL Global Development Group (PGDG) এর official repository আলাদা করে add করতে হয়।
+Rocky Linux 9's default repo carries an older version of PostgreSQL. The official repository of the PostgreSQL Global Development Group (PGDG) must be added separately.
 
 ### Command
 
@@ -95,34 +95,34 @@ Rocky Linux 9 এর default repo তে PostgreSQL এর পুরনো versi
 dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
 ```
 
-এই command টা একটা `.rpm` package সরাসরি URL থেকে install করে — এই package ই PGDG এর সব version এর repository configure করে দেয়।
+This command installs an `.rpm` package straight from a URL; that package configures the repository for all PGDG versions.
 
-এরপর Rocky Linux এর built-in PostgreSQL module disable করো — না করলে conflict হবে:
+Then disable Rocky Linux's built-in PostgreSQL module; otherwise there will be a conflict:
 
 ```bash
 dnf -qy module disable postgresql
 ```
 
-**কেন disable করতে হয়:** Rocky এর AppStream এ নিজস্ব একটা postgresql module আছে। দুটো একসাথে থাকলে `dnf` confused হয় কোনটা থেকে install করবে। PGDG version ব্যবহার করতে হলে AppStream এরটা disable করতেই হবে।
+**Why disabling is necessary:** Rocky's AppStream has its own postgresql module. With both present, `dnf` gets confused about which to install from. To use the PGDG version, the AppStream one must be disabled.
 
-### Verify করো
+### Verify
 
 ```bash
 dnf repolist | grep pgdg
 ```
 
-`pgdg17` সহ কয়েকটা repo দেখাবে — মানে সফল।
+It shows several repos including `pgdg17`, which means it worked.
 
 ---
 
-## ধাপ ২ — PostgreSQL 17 Install করা
+## Step 2 — Install PostgreSQL 17
 
-### কী install হয়
+### What gets installed
 
-| Package | কী করে |
+| Package | What it does |
 |---------|---------|
 | `postgresql17-server` | `postgres` daemon, data directory management |
-| `postgresql17` | `psql` client, `pg_dump`, `pg_restore`, সব utilities |
+| `postgresql17` | The `psql` client, `pg_dump`, `pg_restore`, all utilities |
 
 ### Command
 
@@ -130,31 +130,31 @@ dnf repolist | grep pgdg
 dnf install -y postgresql17-server postgresql17
 ```
 
-### Verify করো
+### Verify
 
 ```bash
 psql --version
-# অথবা full path দিয়ে
+# or with the full path
 /usr/pgsql-17/bin/psql --version
 ```
 
-`PostgreSQL 17.x` দেখালে সফল।
+If it shows `PostgreSQL 17.x`, it worked.
 
 ---
 
-## ধাপ ৩ — Database Cluster Initialize করা (initdb)
+## Step 3 — Initialize the Database Cluster (initdb)
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-এটা PostgreSQL এর একটা unique step — MongoDB বা MySQL এ এরকম নেই। Install হওয়া মানেই PostgreSQL ready না। একটা "database cluster" তৈরি করতে হয় — এই process কে বলা হয় `initdb`।
+This is a PostgreSQL-specific step; MongoDB and MySQL do not have it. Being installed does not mean PostgreSQL is ready. A "database cluster" must be created, and this process is called `initdb`.
 
-`initdb` চলার সময় যা হয়:
-- `/var/lib/pgsql/17/data/` directory তৈরি হয়
-- System tables তৈরি হয় (pg_database, pg_user ইত্যাদি)
-- Config files তৈরি হয় (`postgresql.conf`, `pg_hba.conf`)
-- WAL (Write-Ahead Log) directory তৈরি হয়
+What happens while `initdb` runs:
+- The `/var/lib/pgsql/17/data/` directory is created
+- System tables are created (pg_database, pg_user and so on)
+- Config files are created (`postgresql.conf`, `pg_hba.conf`)
+- The WAL (Write-Ahead Log) directory is created
 
-**এটা একবারই করতে হয় — fresh install এর পর।**
+**This is done only once, after a fresh install.**
 
 ### Command
 
@@ -162,41 +162,41 @@ psql --version
 /usr/pgsql-17/bin/postgresql-17-setup initdb
 ```
 
-### Output দেখবে
+### The output looks like this
 
 ```
 Initializing database ... OK
 ```
 
-### এরপর যা তৈরি হয়
+### What gets created afterwards
 
 ```
 /var/lib/pgsql/17/data/
 ├── postgresql.conf      ← main configuration
 ├── pg_hba.conf          ← authentication rules
-├── pg_ident.conf        ← ident mapping (সাধারণত দরকার হয় না)
+├── pg_ident.conf        ← ident mapping (usually not needed)
 ├── base/                ← actual database files
 ├── pg_wal/              ← write-ahead log files
-└── log/                 ← log files (logging_collector on হলে)
+└── log/                 ← log files (if logging_collector is on)
 ```
 
 ---
 
-## ধাপ ৪ — postgresql.conf Configure করা
+## Step 4 — Configure postgresql.conf
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-এটা PostgreSQL এর main config file। Server কীভাবে চলবে সব এখানে define করা থাকে — কোন IP শুনবে, কতটুকু memory নেবে, log কীভাবে লিখবে, backup এর জন্য WAL কতটুকু রাখবে।
+This is PostgreSQL's main config file. Everything about how the server runs is defined here: which IPs it listens on, how much memory it uses, how it writes logs, how much WAL it keeps for backups.
 
-### File খোলো
+### Open the file
 
 ```bash
 vi /var/lib/pgsql/17/data/postgresql.conf
 ```
 
-### গুরুত্বপূর্ণ settings এবং তাদের ব্যাখ্যা
+### Important settings and their explanations
 
-নিচের প্রতিটা setting খুঁজে বের করো (file এ আগে থেকেই আছে, comment করা — `#` সরিয়ে enable করতে হবে) এবং value set করো:
+Find each of the settings below (they already exist in the file, commented out; remove the `#` to enable them) and set the values:
 
 ---
 
@@ -206,16 +206,16 @@ vi /var/lib/pgsql/17/data/postgresql.conf
 listen_addresses = '*'
 ```
 
-কোন IP তে PostgreSQL "কান পাতবে"। `'*'` মানে সব interface। MongoDB এর `bindIp: 0.0.0.0` এর equivalent।
+Which IPs PostgreSQL "listens" on. `'*'` means all interfaces. It is the equivalent of MongoDB's `bindIp: 0.0.0.0`.
 
-> **Production এ আরো specific করা যায়:** `'127.0.0.1,<db-server-ip>'` — শুধু localhost এবং DB server এর নিজের IP। তোমার Senior DBA এর preference জিজ্ঞেস করো।
+> **In production you can be more specific:** `'127.0.0.1,<db-server-ip>'`: only localhost and the DB server's own IP. Ask your Senior DBA for their preference.
 
 ```ini
 port = 5432
 max_connections = 200
 ```
 
-`max_connections` — একসাথে সর্বোচ্চ কতটা client connect করতে পারবে। Backend এর connection pool size এর চেয়ে বেশি রাখো।
+`max_connections`: the maximum number of clients that can connect at the same time. Keep it above the backend's connection pool size.
 
 ---
 
@@ -228,28 +228,28 @@ work_mem = 4MB
 maintenance_work_mem = 64MB
 ```
 
-> **⚠️ এই values server এর actual RAM এর উপর নির্ভর করে।** নিচে formula:
+> **⚠️ These values depend on the server's actual RAM.** The formulas are below:
 >
 > | Parameter | Rule of thumb |
 > |-----------|---------------|
-> | `shared_buffers` | Total RAM এর 25% |
-> | `effective_cache_size` | Total RAM এর 75% |
+> | `shared_buffers` | 25% of total RAM |
+> | `effective_cache_size` | 75% of total RAM |
 > | `work_mem` | (RAM - shared_buffers) / max_connections |
-> | `maintenance_work_mem` | RAM এর 5%, max 1GB |
+> | `maintenance_work_mem` | 5% of RAM, max 1GB |
 >
-> Server এর RAM দেখো: `free -h`
+> Check the server's RAM: `free -h`
 >
-> Senior DBA এর কাছ থেকে company standard values নাও।
+> Get the company standard values from the Senior DBA.
 
-`shared_buffers` — PostgreSQL এর নিজস্ব cache। Data এখান থেকে পড়লে disk এ যেতে হয় না — fast।
+`shared_buffers`: PostgreSQL's own cache. Reading data from here avoids going to disk, so it is fast.
 
-`effective_cache_size` — OS এর disk cache কতটুকু আছে সেটার estimate। PostgreSQL নিজে এটা allocate করে না, শুধু query planner কে hint দেয়।
+`effective_cache_size`: an estimate of how much OS disk cache is available. PostgreSQL does not allocate this itself; it only hints the query planner.
 
-`work_mem` — প্রতিটা sort/hash operation এর জন্য memory। বেশি দিলে query fast, কিন্তু অনেক connection থাকলে total memory বেশি লাগে।
+`work_mem`: memory for each sort/hash operation. A higher value makes queries faster, but with many connections the total memory needed grows.
 
 ---
 
-**WAL settings — backup এর জন্য জরুরি:**
+**WAL settings, important for backups:**
 
 ```ini
 wal_level = replica
@@ -259,15 +259,15 @@ max_wal_senders = 3
 wal_keep_size = 1GB
 ```
 
-`wal_level = replica` — WAL এ কতটুকু information লিখবে। `replica` level এ replication এবং PITR (Point-in-Time Recovery) এর জন্য যথেষ্ট information থাকে। এটা না হলে pgBackRest কাজ করবে না।
+`wal_level = replica`: how much information is written into the WAL. At the `replica` level there is enough information for replication and PITR (Point-in-Time Recovery). Without it, pgBackRest will not work.
 
-`archive_mode = on` — WAL files গুলো archive করবে।
+`archive_mode = on`: WAL files will be archived.
 
-`archive_command` — প্রতিটা WAL file complete হলে এই command run হবে। `%p` এর জায়গায় WAL file এর path বসে। pgBackRest configure হওয়ার আগে এই command fail করবে — তাই pgBackRest setup (ধাপ ৮) করার পরে service restart করতে হবে।
+`archive_command`: this command runs each time a WAL file is complete. `%p` is replaced with the path of the WAL file. Until pgBackRest is configured this command will fail, so the service must be restarted after the pgBackRest setup (Step 8).
 
-`max_wal_senders` — কতটা replication connection allow করবে।
+`max_wal_senders`: how many replication connections to allow.
 
-`wal_keep_size` — Minimum কতটুকু WAL disk এ রাখবে।
+`wal_keep_size`: the minimum amount of WAL to keep on disk.
 
 ---
 
@@ -284,13 +284,13 @@ log_line_prefix = '%m [%p] %q%u@%d '
 log_timezone = 'Asia/Dhaka'
 ```
 
-`logging_collector = on` — Background process এ log লেখে। এটা off থাকলে log file এ যায় না।
+`logging_collector = on`: writes logs from a background process. If it is off, logs do not go to the log file.
 
-`log_min_duration_statement = 1000` — 1000ms (1 second) এর বেশি সময় নেওয়া query log এ লেখে। Slow query diagnose করতে কাজে লাগে।
+`log_min_duration_statement = 1000`: logs queries that take longer than 1000 ms (1 second). Useful for diagnosing slow queries.
 
-`log_line_prefix` — প্রতিটা log line এর আগে কী লিখবে। `%m` = timestamp, `%p` = process ID, `%u` = username, `%d` = database name।
+`log_line_prefix`: what is written before each log line. `%m` = timestamp, `%p` = process ID, `%u` = username, `%d` = database name.
 
-`log_timezone` — Log এর timestamp কোন timezone এ। তোমার server যদি UTC তে থাকে তাহলে `'UTC'` দাও — Senior DBA কে জিজ্ঞেস করো।
+`log_timezone`: the timezone of the log timestamps. If your server is on UTC, use `'UTC'`. Ask the Senior DBA.
 
 ---
 
@@ -300,181 +300,181 @@ log_timezone = 'Asia/Dhaka'
 timezone = 'Asia/Dhaka'
 ```
 
-> **⚠️ Server কোন timezone এ configured সেটার সাথে match করা ভালো।** Server এর timezone দেখো: `timedatectl`। Senior DBA এর preference জিজ্ঞেস করো।
+> **⚠️ It is best to match the timezone the server is configured with.** Check the server's timezone: `timedatectl`. Ask the Senior DBA for their preference.
 
 ---
 
-## ধাপ ৫ — pg_hba.conf Configure করা
+## Step 5 — Configure pg_hba.conf
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-`pg_hba.conf` (Host-Based Authentication) PostgreSQL এর authentication rule file। এটা MongoDB এর `security: authorization: enabled` এর চেয়ে অনেক বেশি granular।
+`pg_hba.conf` (Host-Based Authentication) is PostgreSQL's authentication rule file. It is far more granular than MongoDB's `security: authorization: enabled`.
 
-এখানে line by line define করা হয়:
-- কোন **type** এর connection (local/network)
-- কোন **database** এ
-- কোন **user**
-- কোন **IP** থেকে
-- কোন **method** এ authenticate করবে
+It defines, line by line:
+- Which **type** of connection (local/network)
+- To which **database**
+- For which **user**
+- From which **IP**
+- With which **method** to authenticate
 
-### File খোলো
+### Open the file
 
 ```bash
 vi /var/lib/pgsql/17/data/pg_hba.conf
 ```
 
-### File এর পুরো content replace করো
+### Replace the whole content of the file
 
 ```conf
 # TYPE    DATABASE    USER        ADDRESS                  METHOD
 
-# Local OS — postgres OS user peer auth দিয়ে password ছাড়া ঢুকতে পারবে
-# এটা DBA এর জন্য server এ বসে কাজ করার সময় লাগে
+# Local OS: the postgres OS user can get in without a password via peer auth
+# This is needed when the DBA works on the server itself
 local     all         postgres                             peer
 
-# Localhost থেকে সব user password দিয়ে
+# All users from localhost, with a password
 host      all         all         127.0.0.1/32             md5
 
-# Backend/application server থেকে
+# From the backend/application server
 host      all         all         <backend-server-ip>/32   md5
 
-# DBA এর machine থেকে pgAdmin বা psql দিয়ে connect
+# From the DBA's machine, via pgAdmin or psql
 host      all         postgres    <dba-machine-ip>/32      md5
 ```
 
-### Authentication method এর মানে
+### What the authentication methods mean
 
-| Method | কী করে | কখন ব্যবহার |
+| Method | What it does | When to use |
 |--------|---------|-------------|
-| `peer` | OS এর current user এর নামের সাথে PG user নাম match করলে password ছাড়া allow | শুধু local, DBA এর জন্য |
-| `md5` | Password hash দিয়ে verify করে | Remote connection সব জায়গায় |
-| `scram-sha-256` | md5 এর চেয়ে বেশি secure — PG 14+ এ recommended | Senior DBA এর preference অনুযায়ী |
+| `peer` | Allows without a password if the OS user's name matches the PG user name | Local only, for the DBA |
+| `md5` | Verifies with a password hash | All remote connections |
+| `scram-sha-256` | More secure than md5; recommended on PG 14+ | According to the Senior DBA's preference |
 
-> **⚠️ Replace করতে হবে:**
-> - `<backend-server-ip>` — Backend application server এর IP। DevOps/backend team এর কাছ থেকে নাও।
-> - `<dba-machine-ip>` — তোমার নিজের machine এর IP। `curl ifconfig.me` দিয়ে পাবে।
+> **⚠️ To be replaced:**
+> - `<backend-server-ip>`: the IP of the backend application server. Get it from the DevOps/backend team.
+> - `<dba-machine-ip>`: your own machine's IP. You can get it with `curl ifconfig.me`.
 
-### Connection type এর মানে
+### What the connection types mean
 
-`local` — Unix socket connection। Same machine থেকে, same OS এর ভেতর দিয়ে। Network involve করে না।
+`local`: a Unix socket connection, from the same machine, inside the same OS. No network is involved.
 
-`host` — TCP/IP connection। এটা localhost এবং remote দুটোই হতে পারে — address দিয়ে distinguish করা হয়।
+`host`: a TCP/IP connection. It can be localhost or remote; they are told apart by the address.
 
 ---
 
-## ধাপ ৬ — Service Start করা
+## Step 6 — Start the Service
 
 ```bash
-# Service চালু করো
+# Start the service
 systemctl start postgresql-17
 
-# Server reboot হলে automatically উঠবে
+# Start automatically after a server reboot
 systemctl enable postgresql-17
 
-# Status দেখো
+# Check the status
 systemctl status postgresql-17
 ```
 
-`active (running)` দেখলে সফল।
+If you see `active (running)`, it worked.
 
-যদি failed হয়:
+If it fails:
 
 ```bash
-# কারণ এখানে থাকবে
+# The cause will be here
 journalctl -u postgresql-17 -n 50
-# অথবা
+# or
 tail -50 /var/lib/pgsql/17/data/log/postgresql-$(date +%Y-%m-%d).log
 ```
 
-সাধারণ কারণ: `postgresql.conf` এ কোনো value ভুল, অথবা `listen_addresses` এ এমন IP দেওয়া হয়েছে যেটা server এ নেই।
+Common causes: a wrong value in `postgresql.conf`, or an IP in `listen_addresses` that does not exist on the server.
 
 ---
 
-## ধাপ ৭ — postgres User এর Password Set করা এবং Application Setup
+## Step 7 — Set the postgres User's Password and Set Up the Application
 
-### postgres user এর password set করো
+### Set the postgres user's password
 
 ```bash
-# postgres OS user হিসেবে psql এ ঢোকো
+# Enter psql as the postgres OS user
 sudo -u postgres psql
 ```
 
-Prompt `postgres=#` দেখাবে।
+The prompt shows `postgres=#`.
 
 ```sql
--- postgres superuser এর password set করো
+-- Set the postgres superuser's password
 ALTER USER postgres WITH PASSWORD '<strong_password>';
 
--- বের হও
+-- Exit
 \q
 ```
 
-> **⚠️ এই password টা সরাসরি team password manager এ রাখো।**
+> **⚠️ Put this password straight into the team password manager.**
 
-### Application database এবং user তৈরি করো
+### Create the application database and user
 
-> **⚠️ Backend team এর কাছ থেকে exact database name এবং user name জেনে নাও আগে।** নিচে pattern দেওয়া হলো।
+> **⚠️ First get the exact database name and user name from the backend team.** The pattern is given below.
 
 ```sql
 sudo -u postgres psql
 ```
 
 ```sql
--- Application এর জন্য database তৈরি করো
+-- Create the database for the application
 CREATE DATABASE <app_database_name>;
 
--- Application এর জন্য dedicated user তৈরি করো
+-- Create a dedicated user for the application
 CREATE USER <app_user> WITH PASSWORD '<app_password>';
 
--- User কে database এ permission দাও
+-- Grant the user permission on the database
 GRANT ALL PRIVILEGES ON DATABASE <app_database_name> TO <app_user>;
 
--- PG 15+ এ schema level permission ও দিতে হয়
+-- On PG 15+ you must also grant schema-level permission
 \c <app_database_name>
 GRANT ALL ON SCHEMA public TO <app_user>;
 
 \q
 ```
 
-**কেন আলাদা user:** `postgres` superuser দিয়ে application connect করালে সে সব database এ সব কাজ করতে পারবে — এটা security risk। `<app_user>` শুধু তার নিজের database এ কাজ করতে পারবে।
+**Why a separate user:** if the application connects as the `postgres` superuser, it can do anything on every database, which is a security risk. `<app_user>` can work only on its own database.
 
 ---
 
-## ধাপ ৮ — Firewall Port Open করা
+## Step 8 — Open the Firewall Port
 
 ```bash
-# Backend server থেকে 5432 port allow করো
+# Allow port 5432 from the backend server
 firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<backend-server-ip>/32" port protocol="tcp" port="5432" accept'
 
-# তোমার DBA machine থেকে pgAdmin/psql এর জন্য
+# For pgAdmin/psql from your DBA machine
 firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<dba-machine-ip>/32" port protocol="tcp" port="5432" accept'
 
-# Apply করো
+# Apply
 firewall-cmd --reload
 
-# Verify করো
+# Verify
 firewall-cmd --list-all
 ```
 
 ---
 
-## ধাপ ৯ — pgBackRest Install এবং Configure করা
+## Step 9 — Install and Configure pgBackRest
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-pgBackRest PostgreSQL এর জন্য dedicated backup tool। এটা দুটো জিনিস করে:
+pgBackRest is a dedicated backup tool for PostgreSQL. It does two things:
 
-**১. Continuous WAL Archiving:** PostgreSQL প্রতিটা transaction লেখার সময় WAL (Write-Ahead Log) file এ আগে লেখে। pgBackRest এই WAL files গুলো automatically একটা safe location এ copy করে রাখে। এতে করে যেকোনো নির্দিষ্ট সময়ে (minute পর্যন্ত) database restore করা যায় — এটাকে PITR বলে।
+**1. Continuous WAL archiving:** when PostgreSQL writes a transaction, it first writes it into a WAL (Write-Ahead Log) file. pgBackRest automatically copies these WAL files to a safe location. This makes it possible to restore the database to any specific moment (down to the minute), which is called PITR.
 
-**২. Scheduled Base Backup:** সম্পূর্ণ database এর snapshot নেয়। WAL files এর সাথে মিলিয়ে যেকোনো point এ restore করা যায়।
+**2. Scheduled base backups:** takes a snapshot of the whole database. Combined with the WAL files, you can restore to any point.
 
-### Install করো
+### Install
 
 ```bash
 dnf install -y pgbackrest
 ```
 
-### Configuration তৈরি করো
+### Create the configuration
 
 ```bash
 vi /etc/pgbackrest/pgbackrest.conf
@@ -482,13 +482,13 @@ vi /etc/pgbackrest/pgbackrest.conf
 
 ```ini
 [global]
-# Backup কোথায় রাখবে
+# Where to keep backups
 repo1-path=/var/lib/pgbackrest
 
-# কতটা full backup রাখবে (পুরনো মুছে দেবে)
+# How many full backups to keep (older ones are deleted)
 repo1-retention-full=2
 
-# কতটা differential backup রাখবে
+# How many differential backups to keep
 repo1-retention-diff=7
 
 # Log settings
@@ -507,77 +507,77 @@ pg1-port=5432
 pg1-user=postgres
 ```
 
-**`repo1-retention-full=2`** — ২টা full backup রাখবে। তৃতীয়টা নেওয়ার সময় সবচেয়ে পুরনোটা automatically delete হবে।
+**`repo1-retention-full=2`**: keeps 2 full backups. When the third is taken, the oldest is deleted automatically.
 
-**`start-fast=y`** — Backup শুরুর জন্য একটা checkpoint force করে — এতে backup আরো quickly শুরু হয়।
+**`start-fast=y`**: forces a checkpoint to start the backup, so the backup begins more quickly.
 
-**`delta=y`** — Restore করার সময় শুধু যা পরিবর্তন হয়েছে সেটা overwrite করে — পুরো directory মুছে নতুন করে লিখতে হয় না।
+**`delta=y`**: during a restore, overwrites only what has changed; the whole directory does not have to be deleted and rewritten.
 
-### postgresql.conf এর archive_command verify করো
+### Verify the archive_command in postgresql.conf
 
-ধাপ ৪ এ এটা দিয়েছিলে:
+You set this in Step 4:
 
 ```ini
 archive_command = 'pgbackrest --stanza=main archive-push %p'
 ```
 
-এটা ঠিকঠাক আছে কিনা confirm করো।
+Confirm that it is correct.
 
-### Stanza তৈরি করো এবং initialize করো
+### Create and initialize the stanza
 
-pgBackRest এ "stanza" মানে একটা PostgreSQL cluster এর configuration block — `[main]` section টাই stanza।
+In pgBackRest, a "stanza" is the configuration block for one PostgreSQL cluster; the `[main]` section is the stanza.
 
 ```bash
-# postgres user হিসেবে stanza create করো
+# Create the stanza as the postgres user
 sudo -u postgres pgbackrest --stanza=main stanza-create
 
-# postgresql.conf এর archive settings check করো
+# Check the archive settings of postgresql.conf
 sudo -u postgres pgbackrest --stanza=main check
 ```
 
-`check` command কোনো error না দিলে WAL archiving ঠিকমতো কাজ করছে।
+If the `check` command gives no error, WAL archiving is working properly.
 
-> **⚠️ `check` command এ error আসলে:**
-> - `postgresql.conf` এ `wal_level`, `archive_mode`, `archive_command` ঠিক আছে কিনা দেখো
-> - Service restart হয়েছে কিনা দেখো
-> - `/var/lib/pgbackrest` directory এর ownership ঠিক আছে কিনা: `ls -la /var/lib/pgbackrest`
+> **⚠️ If the `check` command gives an error:**
+> - Check that `wal_level`, `archive_mode` and `archive_command` in `postgresql.conf` are correct
+> - Check that the service was restarted
+> - Check the ownership of the `/var/lib/pgbackrest` directory: `ls -la /var/lib/pgbackrest`
 
-### প্রথম full backup নাও
+### Take the first full backup
 
 ```bash
 sudo -u postgres pgbackrest --stanza=main --type=full backup
 ```
 
-কতক্ষণ লাগবে database size এর উপর নির্ভর করে। Successful হলে:
+How long it takes depends on the database size. If it succeeds:
 
 ```bash
 sudo -u postgres pgbackrest --stanza=main info
 ```
 
-Backup এর details দেখাবে।
+It shows the details of the backup.
 
-### Cron দিয়ে schedule করো
+### Schedule it with cron
 
 ```bash
 sudo -u postgres crontab -e
 ```
 
 ```cron
-# প্রতি রবিবার রাত ২টায় full backup
+# Full backup every Sunday at 2:00 AM
 0 2 * * 0 pgbackrest --stanza=main --type=full backup
 
-# বাকি দিন রাত ২টায় differential backup
+# Differential backup at 2:00 AM on the other days
 0 2 * * 1-6 pgbackrest --stanza=main --type=diff backup
 ```
 
 **Full backup vs Differential backup:**
 
-| Type | কী করে | Size | Speed |
+| Type | What it does | Size | Speed |
 |------|---------|------|-------|
-| Full | সম্পূর্ণ database এর copy | বড় | ধীর |
-| Differential | Last full backup এর পর যা পরিবর্তন হয়েছে | ছোট | দ্রুত |
+| Full | A copy of the whole database | Large | Slow |
+| Differential | What has changed since the last full backup | Small | Fast |
 
-WAL archiving continuous চলে — তাই full/diff backup এর মাঝের যেকোনো সময়েও restore করা যাবে।
+WAL archiving runs continuously, so you can restore to any moment between the full/diff backups too.
 
 ---
 
@@ -585,134 +585,134 @@ WAL archiving continuous চলে — তাই full/diff backup এর মা�
 
 ---
 
-## Migration এর আগে যা করতে হবে
+## What to Do Before Migrating
 
-### ১. Source (Combined Server) এ data size দেখো
+### 1. Check the data size on the source (Combined Server)
 
 ```bash
-# Combined server এ
+# On the combined server
 docker exec <pg-container-name> psql -U postgres -c "\l+"
 ```
 
-এখানে প্রতিটা database এর size দেখাবে। Total size note করো — এতে বুঝতে পারবে dump এবং transfer কতক্ষণ লাগবে।
+It shows the size of each database. Note the total size; it tells you how long the dump and transfer will take.
 
-> **⚠️ `<pg-container-name>` জানতে:** `docker ps` — PostgreSQL container এর নাম দেখাবে।
+> **⚠️ To find `<pg-container-name>`:** `docker ps` shows the name of the PostgreSQL container.
 
-### ২. New server এ disk space আছে কিনা দেখো
+### 2. Check that the new server has disk space
 
 ```bash
-# New DB server এ
+# On the new DB server
 df -h /var/lib/pgsql
 df -h /tmp
 ```
 
-Dump file রাখার জন্য `/tmp` বা অন্য কোনো location এ যথেষ্ট space লাগবে। Source database এর size এর কমপক্ষে ২ গুণ free space রাখো।
+You need enough space in `/tmp` or another location for the dump file. Keep at least 2 times the size of the source databases as free space.
 
-### ৩. Network connectivity test করো
+### 3. Test network connectivity
 
 ```bash
-# New DB server থেকে combined server এ ping করো
+# Ping the combined server from the new DB server
 ping <combined-server-ip>
 
-# Combined server থেকে new DB server এ SSH করা যায় কিনা test করো
+# Test whether you can SSH from the combined server to the new DB server
 ssh user@<new-db-server-ip> "echo 'connection ok'"
 ```
 
-### ৪. Application team কে জানাও
+### 4. Tell the application team
 
-Migration শুরু করার আগে application team এবং stakeholders কে exact downtime window জানাও।
+Before starting the migration, tell the application team and stakeholders the exact downtime window.
 
 ---
 
 ## Migration — Step by Step
 
-### ওভারভিউ: কোন server এ কী করছো
+### Overview: what you do on which server
 
 ```
 Combined Server                    New DB Server
-(চলছে)                             (ready, কিন্তু empty)
+(running)                          (ready, but empty)
     │                                    │
     │── pre-check ──────────────────────▶│
     │                                    │
-[Downtime শুরু]                          │
+[Downtime starts]                        │
     │                                    │
-    │── app containers বন্ধ             │
+    │── app containers stopped           │
     │                                    │
     │── final pg_dump ──────────────────▶│ (transfer)
     │                                    │
-    │   DB container চলছেই              │── pg_restore
-    │   (rollback এর জন্য)              │
+    │   DB container keeps running       │── pg_restore
+    │   (for rollback)                   │
     │                                    │── data verify
     │                                    │
     │◀── backend reconnects ────────────│
     │                                    │
-[Downtime শেষ]                           │
+[Downtime ends]                          │
 ```
 
 ---
 
-### Migration ধাপ ১ — Pre-Migration Dry Run (Downtime এর আগে)
+### Migration Step 1: Pre-Migration Dry Run (Before Downtime)
 
-**এটা actual downtime এর আগেই করো — practice run।**
+**Do this before the actual downtime: a practice run.**
 
-Combined server এ app বন্ধ না করে একটা test dump নাও। এই dump টা production এ use হবে না, কিন্তু dump কতক্ষণ লাগে, transfer কতক্ষণ লাগে — সেটা জানা যাবে। এই তথ্য দিয়ে downtime window কতক্ষণ লাগবে estimate করতে পারবে।
+Take a test dump on the combined server without stopping the app. This dump will not be used in production, but it tells you how long the dump takes and how long the transfer takes. With that information you can estimate how long the downtime window will need to be.
 
 ```bash
-# Combined server এ
+# On the combined server
 time docker exec <pg-container-name> pg_dumpall \
   -U postgres \
   --clean \
   --if-exists \
   > /tmp/pg_test_dump.sql
 
-# File size দেখো
+# Check the file size
 ls -lh /tmp/pg_test_dump.sql
 
-# Transfer speed test করো (new server এ পাঠাও, সময় মাপো)
+# Test the transfer speed (send to the new server, measure the time)
 time scp /tmp/pg_test_dump.sql user@<new-db-server-ip>:/tmp/pg_test_dump.sql
 ```
 
-`time` command মোট সময় দেখায়। Dump + transfer এর total time জানলে downtime window plan করা সহজ হয়।
+The `time` command shows the total time. Knowing the total time for dump + transfer makes it easier to plan the downtime window.
 
-**Test dump টা new server এ restore করে দেখো সব ঠিক আছে কিনা:**
+**Restore the test dump on the new server to check that everything is fine:**
 
 ```bash
-# New DB server এ
+# On the new DB server
 sudo -u postgres psql -f /tmp/pg_test_dump.sql 2>&1 | grep -i error | head -20
 ```
 
-কোনো ERROR দেখালে সেটা note করো এবং Senior DBA কে জানাও। PG 18 specific syntax থাকলে এখানেই ধরা পড়বে — actual migration এর আগেই।
+If any ERROR appears, note it and tell the Senior DBA. Any PG 18-specific syntax will be caught here, before the actual migration.
 
 ---
 
-### Migration ধাপ ২ — Downtime Window শুরু
+### Migration Step 2: Start the Downtime Window
 
-**সময় এসেছে। Application team কে জানাও।**
+**The time has come. Tell the application team.**
 
-Combined server এ application containers বন্ধ করো — database container বন্ধ করবে না:
+On the combined server, stop the application containers; do not stop the database container:
 
 ```bash
-# Combined server এ
-# শুধু frontend এবং backend বন্ধ করো
+# On the combined server
+# Stop only the frontend and backend
 docker stop <frontend-container-name> <backend-container-name>
 
-# Confirm করো বন্ধ হয়েছে
+# Confirm they are stopped
 docker ps
-# শুধু DB containers দেখাবে
+# Should show only the DB containers
 ```
 
-**কেন DB container বন্ধ করছি না:** এই moment থেকে নতুন কোনো write আসবে না (app বন্ধ)। DB বন্ধ না করা মানে rollback সবসময় possible — সমস্যা হলে app আবার পুরনো DB এর দিকে point করলেই হবে।
+**Why we do not stop the DB container:** from this moment no new writes arrive (the app is stopped). Not stopping the DB means rollback is always possible: if something goes wrong, just point the app back at the old DB.
 
 ---
 
-### Migration ধাপ ৩ — Final Dump নেওয়া
+### Migration Step 3: Take the Final Dump
 
-App বন্ধ হওয়ার পর কোনো নতুন data আসছে না — এই মুহূর্তে dump নাও। এটাই authoritative final backup।
+With the app stopped, no new data is coming in; take the dump now. This is the authoritative final backup.
 
 ```bash
-# Combined server এ
+# On the combined server
 
-# Option A — সব database একসাথে dump (recommended)
+# Option A: dump all databases together (recommended)
 docker exec <pg-container-name> pg_dumpall \
   -U postgres \
   --clean \
@@ -722,13 +722,13 @@ docker exec <pg-container-name> pg_dumpall \
 echo "Dump completed: $(ls -lh /tmp/pg_final_*.sql)"
 ```
 
-**`pg_dumpall` কী করে:** সব database, সব user (role), সব permission একটাই SQL file এ বের করে আনে। New server এ এই একটা file restore করলেই সব পাওয়া যাবে।
+**What `pg_dumpall` does:** exports all databases, all users (roles) and all permissions into a single SQL file. Restoring this one file on the new server gives you everything.
 
-**`--clean`:** Restore করার সময় আগে existing objects drop করে। নতুন server এ এটা দরকার নেই আসলে, কিন্তু idempotent রাখার জন্য ভালো।
+**`--clean`:** drops existing objects first during the restore. It is not really needed on a new server, but it is good for keeping the restore idempotent.
 
-**`--if-exists`:** `--clean` এর সাথে ব্যবহার করলে drop করার আগে object exist করে কিনা check করে — error এড়ায়।
+**`--if-exists`:** when used with `--clean`, checks whether the object exists before dropping it, which avoids errors.
 
-> **যদি শুধু specific database dump করতে চাও** (নির্দিষ্ট DB আলাদা রাখতে চাইলে):
+> **If you want to dump only specific databases** (if you want to keep a particular DB separate):
 > ```bash
 > docker exec <pg-container-name> pg_dump \
 >   -U postgres \
@@ -737,165 +737,165 @@ echo "Dump completed: $(ls -lh /tmp/pg_final_*.sql)"
 >   -d <database_name> \
 >   > /tmp/<database_name>_$(date +%Y%m%d_%H%M%S).dump
 > ```
-> `-Fc` = custom format (compressed, faster restore করা যায় `pg_restore` দিয়ে)
+> `-Fc` = custom format (compressed, and can be restored faster with `pg_restore`)
 
 ---
 
-### Migration ধাপ ৪ — Dump File Transfer করা
+### Migration Step 4: Transfer the Dump File
 
 ```bash
-# Combined server থেকে new DB server এ
+# From the combined server to the new DB server
 scp /tmp/pg_final_*.sql user@<new-db-server-ip>:/tmp/
 
-# Transfer সফল হয়েছে কিনা verify করো
+# Verify that the transfer succeeded
 ssh user@<new-db-server-ip> "ls -lh /tmp/pg_final_*.sql"
 ```
 
-File size দুই জায়গায় same হওয়া উচিত — আলাদা হলে transfer incomplete।
+The file size should be the same in both places; if it differs, the transfer is incomplete.
 
 ---
 
-### Migration ধাপ ৫ — New Server এ Restore করা
+### Migration Step 5: Restore on the New Server
 
 ```bash
-# New DB server এ
+# On the new DB server
 
-# Restore করো
+# Restore
 sudo -u postgres psql -f /tmp/pg_final_<timestamp>.sql 2>&1 | tee /tmp/restore_log.txt
 
-# Restore শেষে error আছে কিনা দেখো
+# Check for errors after the restore finishes
 grep -i "^error" /tmp/restore_log.txt
 ```
 
-`tee` command একসাথে screen এ দেখায় এবং file এ লেখে — পরে দেখার জন্য।
+The `tee` command shows output on screen and writes it to a file at the same time, for later review.
 
-**কিছু `ERROR` দেখলে panic করবে না।** কিছু common benign errors:
+**Do not panic if you see some `ERROR` lines.** Some common benign errors:
 
-| Error | কারণ | Problem? |
+| Error | Cause | Problem? |
 |-------|------|----------|
-| `role "postgres" already exists` | Postgres superuser already আছে | ✅ Normal |
-| `ERROR: database "postgres" already exists` | Default database already আছে | ✅ Normal |
-| `ERROR: must be owner of ...` | Permission hierarchy restore | ⚠️ Senior DBA কে জানাও |
+| `role "postgres" already exists` | The postgres superuser already exists | ✅ Normal |
+| `ERROR: database "postgres" already exists` | The default database already exists | ✅ Normal |
+| `ERROR: must be owner of ...` | Permission hierarchy being restored | ⚠️ Tell the Senior DBA |
 | `ERROR: syntax error` | PG18-specific syntax | ❌ Critical — Senior DBA |
 
 ---
 
-### Migration ধাপ ৬ — Data Verify করা
+### Migration Step 6: Verify the Data
 
-Restore শেষে data ঠিকমতো এসেছে কিনা confirm করো।
+After the restore, confirm the data arrived properly.
 
-**New server এ:**
+**On the new server:**
 
 ```bash
 sudo -u postgres psql
 ```
 
 ```sql
--- সব database দেখো
+-- Show all databases
 \l
 
--- প্রতিটা important database এ ঢুকে table গুলো দেখো
+-- Enter each important database and look at the tables
 \c <database_name>
 \dt
 
--- Critical tables এর row count দেখো
+-- Check the row counts of critical tables
 SELECT COUNT(*) FROM <important_table_name>;
 
--- বের হও
+-- Exit
 \q
 ```
 
-**Combined server এ একই count করো এবং compare করো:**
+**Run the same counts on the combined server and compare:**
 
 ```bash
 docker exec <pg-container-name> psql -U postgres -d <database_name> \
   -c "SELECT COUNT(*) FROM <important_table_name>;"
 ```
 
-দুই জায়গায় count same হলে migration successful।
+If the counts match in both places, the migration succeeded.
 
-> **⚠️ যদি count আলাদা হয়:** Rollback করো — app containers combined server এ আবার উঠিয়ে দাও এবং investigation করো।
+> **⚠️ If the counts differ:** roll back: bring the app containers up on the combined server again and investigate.
 
 ---
 
-### Migration ধাপ ৭ — Application Reconnect করা
+### Migration Step 7: Reconnect the Application
 
-Data verify হয়ে গেলে backend team কে জানাও — তারা application এর connection string নতুন DB server এর দিকে point করবে।
+Once the data is verified, tell the backend team; they will point the application's connection string at the new DB server.
 
 ```
-পুরনো: postgresql://postgres:<pass>@<combined-server-ip>:5432/<dbname>
-নতুন:  postgresql://<app_user>:<pass>@<new-db-server-ip>:5432/<dbname>
+Old: postgresql://postgres:<pass>@<combined-server-ip>:5432/<dbname>
+New: postgresql://<app_user>:<pass>@<new-db-server-ip>:5432/<dbname>
 ```
 
-Application উঠিয়ে smoke test করো:
-- Login করা যাচ্ছে কিনা
-- Data দেখা যাচ্ছে কিনা
-- কোনো DB error আসছে কিনা
+Bring the application up and run a smoke test:
+- Can you log in?
+- Is the data visible?
+- Are any DB errors appearing?
 
-সব ঠিক থাকলে **downtime শেষ।**
+If everything is fine, **the downtime is over.**
 
 ---
 
 ### Rollback Plan
 
-যদি কোনো ধাপে সমস্যা হয়:
+If there is a problem at any step:
 
 ```bash
-# Combined server এ — app containers আবার উঠিয়ে দাও
+# On the combined server: bring the app containers up again
 docker start <frontend-container-name> <backend-container-name>
 ```
 
-Combined server এর DB container কখনো বন্ধ করা হয়নি — তাই rollback মানে শুধু app কে পুরনো connection এ ফিরিয়ে দেওয়া। কোনো data loss নেই।
+The combined server's DB container was never stopped, so rollback only means pointing the app back at the old connection. No data is lost.
 
 ---
 
-## দরকারি Commands — Quick Reference
+## Useful Commands: Quick Reference
 
 ### Connection
 
 ```bash
-# Local — postgres OS user দিয়ে (password ছাড়া)
+# Local: as the postgres OS user (no password)
 sudo -u postgres psql
 
-# Local — password দিয়ে
+# Local: with a password
 psql -U postgres -h 127.0.0.1
 
-# Remote — নির্দিষ্ট database এ
+# Remote: to a specific database
 psql -h <db-server-ip> -U <user> -d <database_name>
 
-# pgAdmin দিয়ে connect করতে: host, port 5432, username, password
+# To connect with pgAdmin: host, port 5432, username, password
 ```
 
-### psql shell এর ভেতরে
+### Inside the psql shell
 
 ```sql
--- সব database দেখো  (MongoDB এর show dbs)
+-- Show all databases  (MongoDB's show dbs)
 \l
 
--- Database switch করো  (MongoDB এর use dbname)
+-- Switch database  (MongoDB's use dbname)
 \c <database_name>
 
--- Tables দেখো  (MongoDB এর show collections)
+-- Show tables  (MongoDB's show collections)
 \dt
 
--- Current database  (MongoDB এর db)
+-- Current database  (MongoDB's db)
 SELECT current_database();
 
 -- Current user
 SELECT current_user;
 
--- সব user দেখো
+-- Show all users
 \du
 
--- Active connections দেখো
+-- Show active connections
 SELECT pid, usename, application_name, client_addr, state, query
 FROM pg_stat_activity
 WHERE state != 'idle';
 
--- একটা connection kill করো
+-- Kill a connection
 SELECT pg_terminate_backend(<pid>);
 
--- বের হও
+-- Exit
 \q
 ```
 
@@ -908,37 +908,37 @@ sudo -u postgres pgbackrest --stanza=main --type=full backup
 # Differential backup
 sudo -u postgres pgbackrest --stanza=main --type=diff backup
 
-# Backup list দেখো
+# List backups
 sudo -u postgres pgbackrest --stanza=main info
 
-# Verify করো সব ঠিক আছে কিনা
+# Verify that everything is fine
 sudo -u postgres pgbackrest --stanza=main check
 ```
 
-### User এবং Permission Management
+### User and Permission Management
 
 ```sql
--- Password change করো
+-- Change a password
 ALTER USER <username> WITH PASSWORD '<new_password>';
 
--- User তৈরি করো
+-- Create a user
 CREATE USER <username> WITH PASSWORD '<password>';
 
--- Database তৈরি করো
+-- Create a database
 CREATE DATABASE <dbname> OWNER <username>;
 
--- Permission দাও
+-- Grant permission
 GRANT ALL PRIVILEGES ON DATABASE <dbname> TO <username>;
 GRANT ALL ON SCHEMA public TO <username>;
 
--- User delete করো
+-- Delete a user
 DROP USER <username>;
 
--- Database delete করো (সতর্কতার সাথে)
+-- Delete a database (with caution)
 DROP DATABASE <dbname>;
 ```
 
-### Log দেখা
+### Viewing Logs
 
 ```bash
 # Live log
@@ -947,7 +947,7 @@ tail -f /var/lib/pgsql/17/data/log/postgresql-$(date +%Y-%m-%d).log
 # Slow queries
 grep "duration:" /var/lib/pgsql/17/data/log/postgresql-$(date +%Y-%m-%d).log | sort -t= -k2 -rn | head -20
 
-# Error গুলো
+# Errors
 grep "^.*ERROR" /var/lib/pgsql/17/data/log/postgresql-$(date +%Y-%m-%d).log
 
 # pgBackRest log
@@ -960,7 +960,7 @@ tail -f /var/log/pgbackrest/main-backup.log
 systemctl start postgresql-17
 systemctl stop postgresql-17
 systemctl restart postgresql-17
-systemctl reload postgresql-17   # config reload, service restart ছাড়া
+systemctl reload postgresql-17   # reload config, without a service restart
 systemctl status postgresql-17
 ```
 
@@ -968,7 +968,7 @@ systemctl status postgresql-17
 
 ## Key File Locations
 
-| কী | কোথায় |
+| What | Where |
 |----|--------|
 | Main config | `/var/lib/pgsql/17/data/postgresql.conf` |
 | Auth config | `/var/lib/pgsql/17/data/pg_hba.conf` |
@@ -982,9 +982,9 @@ systemctl status postgresql-17
 
 ---
 
-## Uninstall (দরকার হলে)
+## Uninstall (when needed)
 
-> **⚠️ এটা run করলে সব data চিরতরে মুছে যাবে।**
+> **⚠️ Running this permanently deletes all data.**
 
 ```bash
 systemctl stop postgresql-17
@@ -996,21 +996,21 @@ rm -rf /var/log/postgresql
 
 ---
 
-## জিনিসগুলো যা তোমাকে আগে থেকে জেনে নিতে হবে
+## Things You Need to Know in Advance
 
-- [ ] **DB server এর নিজের IP** — `ip addr show` দিয়ে পাবে
-- [ ] **Backend server এর IP** — DevOps/backend team এর কাছ থেকে নাও
-- [ ] **তোমার DBA machine এর IP** — `curl ifconfig.me`
-- [ ] **Combined server এ PG container এর নাম** — `docker ps`
-- [ ] **কোন কোন database migrate করতে হবে** — Backend team confirm করবে
-- [ ] **Application user এর name, password** — Backend team এর কাছ থেকে নাও অথবা নতুন তৈরি করো
-- [ ] **Server এর RAM** — `free -h` দিয়ে দেখো, memory config এর জন্য
-- [ ] **Timezone** — `timedatectl` দিয়ে দেখো
-- [ ] **Memory config values** — Senior DBA এর কাছ থেকে company standard নাও
+- [ ] **The DB server's own IP**: get it with `ip addr show`
+- [ ] **The backend server's IP**: get it from the DevOps/backend team
+- [ ] **Your DBA machine's IP**: `curl ifconfig.me`
+- [ ] **The name of the PG container on the combined server**: `docker ps`
+- [ ] **Which databases need to be migrated**: the backend team will confirm
+- [ ] **The application user's name and password**: get them from the backend team or create new ones
+- [ ] **The server's RAM**: check with `free -h`, for the memory config
+- [ ] **Timezone**: check with `timedatectl`
+- [ ] **Memory config values**: get the company standard from the Senior DBA
 - [ ] **Authentication method (md5 vs scram-sha-256)** — Senior DBA preference
-- [ ] **Downtime window** — Application team এর সাথে fix করো
-- [ ] **Rollback decision maker** — Migration এ problem হলে কে rollback decide করবে আগেই fix করো
+- [ ] **Downtime window**: agree it with the application team
+- [ ] **Rollback decision maker**: decide in advance who will decide on rollback if there is a problem in the migration
 
 ---
 
-*Document শেষ — PostgreSQL 17 | Rocky Linux 9 | Migration from PG 18*
+*End of document | PostgreSQL 17 | Rocky Linux 9 | Migration from PG 18*

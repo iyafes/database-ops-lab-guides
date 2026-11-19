@@ -3,13 +3,13 @@
 
 ---
 
-> **এই document টা শুধু তোমার জন্য লেখা।**
-> প্রতিটা step এ কী হচ্ছে, কেন হচ্ছে, কোথায় সতর্ক থাকতে হবে — সব বিস্তারিত আছে।
-> যেখানে তোমার specific value দরকার (IP, password, database name), সেখানে `<এইভাবে>` placeholder দেওয়া আছে — run করার আগে অবশ্যই replace করতে হবে।
+> **This document is written as a working guide for one operator.**
+> Every step explains what is happening, why, and where to be careful, in full detail.
+> Wherever a value specific to your environment is needed (IP, password, database name), a `<like-this>` placeholder is used. Replace it before you run anything.
 
 ---
 
-## পুরো কাজের ধারা (Overview)
+## The Whole Workflow (Overview)
 
 ```
 Repository add
@@ -20,7 +20,7 @@ mongod.conf configure
      ↓
 Service start
      ↓
-Admin user তৈরি  ←── authorization enable করার আগেই
+Create admin user  ←── before enabling authorization
      ↓
 Authorization enable + restart
      ↓
@@ -28,20 +28,20 @@ Replica set initiate
      ↓
 Firewall port open
      ↓
-App database + user তৈরি
+Create app database + user
      ↓
 Backup setup
 ```
 
 ---
 
-## ধাপ ১ — Repository Add করা
+## Step 1 — Add the Repository
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-Rocky Linux 9 এর নিজের default package list এ MongoDB নেই — বা থাকলেও অনেক পুরনো version। তাই MongoDB এর নিজস্ব official repository আলাদা করে add করতে হয়, যাতে `dnf install` করার সময় সে জানে কোথা থেকে MongoDB 8.0 নামাবে।
+Rocky Linux 9's default package list does not contain MongoDB, or only a much older version. So MongoDB's own official repository has to be added separately, so that `dnf install` knows where to fetch MongoDB 8.0 from.
 
-এই repository file টা `/etc/yum.repos.d/` folder এ রাখা হয় — এই folder এ যা থাকে `dnf` সবগুলো automatically পড়ে।
+The repository file goes in `/etc/yum.repos.d/`; `dnf` reads everything in this folder automatically.
 
 ### Command
 
@@ -56,39 +56,39 @@ gpgkey=https://www.mongodb.org/static/pgp/server-8.0.asc
 EOF
 ```
 
-### প্রতিটা line এর মানে
+### What each line means
 
-| Line | মানে |
+| Line | Meaning |
 |------|------|
-| `[mongodb-org-8.0]` | Repository এর internal ID — যেকোনো unique নাম দেওয়া যায় |
-| `name=MongoDB Repository` | শুধু human-readable label |
-| `baseurl=...` | কোথা থেকে package download হবে — এখানে `/9/` মানে Rocky Linux 9 (EL9) |
-| `gpgcheck=1` | Download করা package টা MongoDB এরই, কেউ tamper করেনি — এটা verify করবে |
-| `gpgkey=...` | Verification এর জন্য MongoDB এর official public key |
+| `[mongodb-org-8.0]` | The repository's internal ID; any unique name works |
+| `name=MongoDB Repository` | A human-readable label only |
+| `baseurl=...` | Where packages are downloaded from; `/9/` means Rocky Linux 9 (EL9) |
+| `gpgcheck=1` | Verifies that the downloaded package really comes from MongoDB and was not tampered with |
+| `gpgkey=...` | MongoDB's official public key used for that verification |
 
-### Verify করো
+### Verify
 
 ```bash
 cat /etc/yum.repos.d/mongodb-org-8.0.repo
 ```
 
-File এর content দেখাবে — ঠিকঠাক দেখালে পরের ধাপে যাও।
+It shows the file's content; if it looks right, move on to the next step.
 
 ---
 
-## ধাপ ২ — MongoDB Install করা
+## Step 2 — Install MongoDB
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-`mongodb-org` install করলে একসাথে অনেকগুলো component আসে:
+Installing `mongodb-org` brings in several components at once:
 
-| Component | কী করে |
+| Component | What it does |
 |-----------|---------|
-| `mongod` | MongoDB এর main server daemon — background এ চলে, সব data handle করে |
-| `mongosh` | Interactive shell — এখানে commands type করে database manage করা যায় |
-| `mongodump` | Backup নেওয়ার tool |
-| `mongorestore` | Backup restore করার tool |
-| `mongostat` | Live statistics দেখার tool |
+| `mongod` | MongoDB's main server daemon; runs in the background and handles all data |
+| `mongosh` | Interactive shell; type commands here to manage the database |
+| `mongodump` | Backup tool |
+| `mongorestore` | Restore tool |
+| `mongostat` | Tool for live statistics |
 
 ### Command
 
@@ -96,45 +96,45 @@ File এর content দেখাবে — ঠিকঠাক দেখালে
 dnf install -y mongodb-org
 ```
 
-`-y` flag মানে "সব confirm এ automatically হ্যাঁ বলো" — manually Enter চাপতে হবে না।
+The `-y` flag means "answer yes to every confirmation automatically", so you do not have to press Enter manually.
 
-### Install হয়েছে কিনা verify করো
+### Verify the installation
 
 ```bash
 mongod --version
 mongosh --version
 ```
 
-দুটোই version number দেখালে install সফল।
+If both show a version number, the installation succeeded.
 
 ---
 
-## ধাপ ৩ — mongod.conf Configure করা
+## Step 3 — Configure mongod.conf
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-`/etc/mongod.conf` হলো MongoDB এর main configuration file। Server start হওয়ার সময় এই file পড়ে সে জানে:
-- Data কোথায় রাখবে
-- Log কোথায় লিখবে
-- কোন IP থেকে connection নেবে
-- Password লাগবে কিনা
-- Replica set এর নাম কী
+`/etc/mongod.conf` is MongoDB's main configuration file. When the server starts, it reads this file to learn:
+- Where to keep data
+- Where to write logs
+- Which IPs to accept connections from
+- Whether a password is required
+- What the replica set is called
 
-**Service start করার আগেই এটা configure করতে হবে।**
+**This must be configured before the service is started.**
 
-### File open করো
+### Open the file
 
 ```bash
 vi /etc/mongod.conf
 ```
 
-> **vi editor এ কাজ করার basic:**
-> - `i` চাপলে insert mode — তখন লেখা যাবে
-> - `Esc` চাপলে insert mode থেকে বের হও
-> - `:wq` লিখে Enter — save করে বের হও
-> - `:q!` লিখে Enter — save না করে বের হও
+> **Basics of working in the vi editor:**
+> - Press `i` for insert mode; you can type only in this mode
+> - Press `Esc` to leave insert mode
+> - Type `:wq` and press Enter to save and exit
+> - Type `:q!` and press Enter to exit without saving
 
-### পুরো config (এটা দিয়ে replace করো)
+### The complete config (replace the file content with this)
 
 ```yaml
 # ─── Storage ───────────────────────────────────────────────────
@@ -152,7 +152,7 @@ systemLog:
 # ─── Network ───────────────────────────────────────────────────
 net:
   port: 27017
-  bindIp: 127.0.0.1,<db-server-er-nij-ip>
+  bindIp: 127.0.0.1,<db-server-own-ip>
 
 # ─── Security ──────────────────────────────────────────────────
 security:
@@ -167,7 +167,7 @@ replication:
   replSetName: "rs0"
 ```
 
-### প্রতিটা section এর বিস্তারিত ব্যাখ্যা
+### Detailed explanation of each section
 
 ---
 
@@ -180,9 +180,9 @@ storage:
     enabled: true
 ```
 
-`dbPath` — MongoDB এর actual data files (BSON format) এখানে থাকবে। এই folder এ space যেন যথেষ্ট থাকে।
+`dbPath`: MongoDB's actual data files (BSON format) live here. Make sure this folder has enough space.
 
-`journal: enabled: true` — Journal মানে হলো প্রতিটা write operation আগে একটা "log" এ লেখা হয়, তারপর actual data file এ। Server হঠাৎ crash করলে journal দেখে data recover করা যায়। Production এ এটা সবসময় `true` রাখতে হবে।
+`journal: enabled: true`: the journal means every write operation is first written to a "log" and only then to the actual data file. If the server crashes suddenly, data can be recovered from the journal. In production this must always be `true`.
 
 ---
 
@@ -195,11 +195,11 @@ systemLog:
   path: /var/log/mongodb/mongod.log
 ```
 
-`destination: file` — Log কোথায় যাবে। `file` মানে file এ লিখবে।
+`destination: file`: where the log goes. `file` means it is written to a file.
 
-`logAppend: true` — Server restart হলে আগের log মুছে নতুন শুরু করবে না — আগেরটার সাথে যোগ করবে। এটা `true` না হলে restart এর আগের সব log হারিয়ে যাবে।
+`logAppend: true`: when the server restarts, new log lines are appended to the existing log instead of starting a fresh file. If this is not `true`, all logs from before the restart are lost.
 
-`path` — Log file এর location।
+`path`: the location of the log file.
 
 ---
 
@@ -208,24 +208,24 @@ systemLog:
 ```yaml
 net:
   port: 27017
-  bindIp: 127.0.0.1,<db-server-er-nij-ip>
+  bindIp: 127.0.0.1,<db-server-own-ip>
 ```
 
-`port: 27017` — MongoDB এর default port। এটা সাধারণত পরিবর্তন করা হয় না।
+`port: 27017`: MongoDB's default port. It is not usually changed.
 
-`bindIp` — MongoDB কোন কোন IP address এ "কান পাতবে" (listen করবে)।
-- `127.0.0.1` — localhost, মানে same server থেকে connect করতে পারবে
-- `<db-server-er-nij-ip>` — DB server এর নিজের IP — এটা দিলে অন্য server থেকে (backend server) connect করা যাবে
+`bindIp`: the IP addresses MongoDB "listens" on.
+- `127.0.0.1`: localhost, so connections from the same server work
+- `<db-server-own-ip>`: the DB server's own IP; with this, other servers (the backend server) can connect
 
-> **⚠️ `<db-server-er-nij-ip>` replace করতে হবে।** DB server এর actual IP জানতে:
+> **⚠️ Replace `<db-server-own-ip>`.** To find the DB server's actual IP:
 > ```bash
 > ip addr show
-> # অথবা
+> # or
 > hostname -I
 > ```
-> যে IP দেখাবে সেটা বসাও।
+> Use the IP it shows.
 
-> **কেন `0.0.0.0` দেওয়া উচিত না:** `0.0.0.0` মানে সব IP থেকে connection নেবে — মানে internet থেকেও। Production এ specific IP দাও।
+> **Why you should not use `0.0.0.0`:** `0.0.0.0` accepts connections from every IP, including the internet. In production, give specific IPs.
 
 ---
 
@@ -236,11 +236,11 @@ security:
   authorization: enabled
 ```
 
-এটা MongoDB এর সবচেয়ে গুরুত্বপূর্ণ security setting। Default এ MongoDB **কোনো password ছাড়াই** যে কাউকে connect করতে দেয়। `authorization: enabled` দিলে valid username+password ছাড়া কেউ ঢুকতে পারবে না।
+This is MongoDB's most important security setting. By default, MongoDB lets anyone connect **without any password**. With `authorization: enabled`, nobody can get in without a valid username and password.
 
-> **⚠️ Critical order:** এই setting টা আগে থেকেই config এ রাখো, কিন্তু **admin user তৈরি করার আগে** service restart করো না। নইলে lock হয়ে যাবে।
+> **⚠️ Critical order:** keep this setting in the config from the start, but **do not restart the service before the admin user is created**. Otherwise you will be locked out.
 >
-> এই guide এ সঠিক order মেনে চলা হয়েছে — admin user তৈরির পরে restart করা হবে।
+> This guide follows the correct order: the restart happens after the admin user is created.
 
 ---
 
@@ -251,7 +251,7 @@ operationProfiling:
   slowOpThresholdMs: 100
 ```
 
-100ms এর বেশি সময় নেওয়া query গুলো log এ mark করবে "slow operation" হিসেবে। এটা performance problem diagnose করতে কাজে লাগে।
+Queries that take more than 100 ms are marked as "slow operation" in the log. This helps diagnose performance problems.
 
 ---
 
@@ -262,70 +262,70 @@ replication:
   replSetName: "rs0"
 ```
 
-এটা single server হলেও কেন দরকার:
-- **Oplog চালু হয়** — Oplog মানে সব write operation এর একটা ordered log। এটা consistent backup এর জন্য দরকার।
-- **ভবিষ্যতে** যদি আরেকটা server যোগ করে actual replica set বানাতে হয়, তখন data migration ছাড়াই করা যাবে।
+Why this is needed even on a single server:
+- **The oplog is enabled.** The oplog is an ordered log of all write operations. It is needed for consistent backups.
+- **Later**, if you add another server to build a real replica set, you can do it without migrating the data.
 
-`"rs0"` নামটা convention — পরিবর্তন করা যায়, কিন্তু পরে initiate করার সময় এই নামই match করতে হবে।
+The name `"rs0"` is a convention. You can change it, but the same name must match when you initiate later.
 
 ---
 
-## ধাপ ৪ — Service Start করা
+## Step 4 — Start the Service
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-`systemctl` হলো Linux এর service manager। এটা দিয়ে service start/stop/restart করা যায়, এবং server boot হলে automatically চালু হবে কিনা সেটা set করা যায়।
+`systemctl` is Linux's service manager. It starts, stops and restarts services, and sets whether a service starts automatically at boot.
 
 ### Commands
 
 ```bash
-# Service চালু করো
+# Start the service
 systemctl start mongod
 
-# Server reboot হলে automatically উঠবে — এটা না দিলে restart এর পর manually start করতে হবে
+# Start automatically after a server reboot; without this you must start it manually after a restart
 systemctl enable mongod
 
-# Status দেখো
+# Check the status
 systemctl status mongod
 ```
 
-### Status output কী দেখবে
+### What the status output should show
 
 ```
 ● mongod.service - MongoDB Database Server
    Active: active (running) since ...
 ```
 
-`active (running)` দেখলে সব ঠিক আছে।
+If you see `active (running)`, everything is fine.
 
-### যদি `failed` দেখায়
+### If it shows `failed`
 
 ```bash
-# Log দেখো — সমস্যার কারণ এখানে থাকবে
+# Check the log; the cause will be there
 tail -50 /var/log/mongodb/mongod.log
 ```
 
-সাধারণ কারণ: `mongod.conf` এ yaml formatting ভুল, অথবা `bindIp` তে ভুল IP।
+Common causes: wrong yaml formatting in `mongod.conf`, or a wrong IP in `bindIp`.
 
 ---
 
-## ধাপ ৫ — Admin User তৈরি করা
+## Step 5 — Create the Admin User
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-এই মুহূর্তে `authorization: enabled` config এ আছে কিন্তু service এখনো এটা নিয়ে চলেনি (restart হয়নি)। তাই এখন password ছাড়াই mongosh দিয়ে connect করা যাচ্ছে। এই সুযোগে admin user তৈরি করে নিতে হবে।
+Right now `authorization: enabled` is in the config but the service is not running with it yet (it has not been restarted). So you can still connect with mongosh without a password. Use this opportunity to create the admin user.
 
-Admin user তৈরি হয়ে গেলে service restart করব — তখন authorization fully active হবে।
+Once the admin user exists, we will restart the service, and authorization becomes fully active.
 
-### Shell এ ঢোকো
+### Enter the shell
 
 ```bash
 mongosh
 ```
 
-Prompt পরিবর্তন হয়ে `test>` দেখাবে — মানে shell এ আছো।
+The prompt changes to `test>`, which means you are in the shell.
 
-### Admin user তৈরি করো
+### Create the admin user
 
 ```javascript
 use admin
@@ -337,23 +337,23 @@ db.createUser({
 })
 ```
 
-**প্রতিটা অংশের মানে:**
+**What each part means:**
 
-`use admin` — `admin` database এ switch করো। এটা MongoDB এর special system database — সব administrative user এখানেই থাকে।
+`use admin`: switch to the `admin` database. This is MongoDB's special system database; all administrative users live here.
 
-`user: "admin"` — Username। যেকোনো নাম দেওয়া যায়।
+`user: "admin"`: the username. Any name works.
 
-`pwd: "..."` — Password। Production এ strong password দাও — uppercase, lowercase, number, special character সহ।
+`pwd: "..."`: the password. In production use a strong password: uppercase, lowercase, numbers and special characters.
 
-`roles: [{ role: "root", db: "admin" }]` — `root` role মানে সব database এ সব কাজ করার permission। এটা শুধু DBA এর জন্য — application user কে কখনো `root` দেওয়া হয় না।
+`roles: [{ role: "root", db: "admin" }]`: the `root` role means permission to do everything on every database. It is only for the DBA; an application user is never given `root`.
 
-### Success হলে দেখাবে
+### On success it shows
 
 ```
 { ok: 1 }
 ```
 
-### Shell থেকে বের হও
+### Leave the shell
 
 ```javascript
 exit
@@ -361,58 +361,58 @@ exit
 
 ---
 
-## ধাপ ৬ — Authorization Activate করতে Restart
+## Step 6 — Restart to Activate Authorization
 
-Config এ `authorization: enabled` আগে থেকেই আছে। এখন restart করলে সেটা কার্যকর হবে।
+`authorization: enabled` is already in the config. Restarting now makes it take effect.
 
 ```bash
 systemctl restart mongod
 ```
 
-### Verify — authorization কাজ করছে কিনা
+### Verify that authorization works
 
-Password ছাড়া connect করার চেষ্টা করো — reject হওয়া উচিত:
+Try connecting without a password; it should be rejected:
 
 ```bash
 mongosh --eval "db.adminCommand({ listDatabases: 1 })"
 ```
 
-এটা এখন `Unauthorized` error দেবে — এটাই চাওয়া। মানে authorization ঠিকমতো কাজ করছে।
+It should now give an `Unauthorized` error. That is what we want: authorization is working correctly.
 
-এবার admin password দিয়ে verify করো যে admin user ঢুকতে পারছে:
+Now verify with the admin password that the admin user can get in:
 
 ```bash
 mongosh -u admin -p <password> --authenticationDatabase admin --eval "db.adminCommand({ listDatabases: 1 })"
 ```
 
-Database list দেখালে সব ঠিক আছে।
+If it shows the database list, everything is fine.
 
 ---
 
-## ধাপ ৭ — Replica Set Initiate করা
+## Step 7 — Initiate the Replica Set
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-`mongod.conf` এ `replSetName: "rs0"` দিয়েছি — এটা বলেছে "আমি একটা replica set এর অংশ হতে চাই, নাম rs0"। কিন্তু শুধু config এ দিলেই হয় না, একবার explicitly initiate করতে হয়।
+We set `replSetName: "rs0"` in `mongod.conf`. That says "I want to be part of a replica set named rs0". But setting it in the config is not enough; it must be explicitly initiated once.
 
-`rs.initiate()` run করলে:
-- এই node PRIMARY হয়ে যায়
-- Oplog চালু হয়
-- Replica set officially তৈরি হয়
+Running `rs.initiate()`:
+- Makes this node PRIMARY
+- Enables the oplog
+- Officially creates the replica set
 
-### Admin দিয়ে login করো
+### Log in as admin
 
 ```bash
 mongosh -u admin -p <password> --authenticationDatabase admin
 ```
 
-### Initiate করো
+### Initiate
 
 ```javascript
 rs.initiate()
 ```
 
-### Output দেখবে এরকম
+### The output looks like this
 
 ```json
 {
@@ -422,17 +422,17 @@ rs.initiate()
 }
 ```
 
-Prompt পরিবর্তন হয়ে `rs0 [direct: primary]>` হয়ে যাবে — এটাই confirmation যে replica set চালু হয়েছে এবং এই node PRIMARY।
+The prompt changes to `rs0 [direct: primary]>`. That confirms the replica set is running and this node is PRIMARY.
 
-### Status verify করো
+### Verify the status
 
 ```javascript
 rs.status()
 ```
 
-Output এ `"stateStr": "PRIMARY"` দেখলে সফল।
+If the output shows `"stateStr": "PRIMARY"`, it succeeded.
 
-### Shell থেকে বের হও
+### Leave the shell
 
 ```javascript
 exit
@@ -440,39 +440,39 @@ exit
 
 ---
 
-## ধাপ ৮ — Firewall Port Open করা
+## Step 8 — Open the Firewall Port
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-Rocky Linux 9 এ `firewalld` default এ চালু থাকে এবং সব incoming connection block করে রাখে। MongoDB এর port 27017 explicitly open না করলে backend server থেকে connect করা যাবে না।
+On Rocky Linux 9, `firewalld` is enabled by default and blocks all incoming connections. Unless MongoDB's port 27017 is explicitly opened, the backend server cannot connect.
 
-তবে সবার জন্য open করা নিরাপদ না — শুধু specific IP (backend server) এর জন্য open করতে হবে।
+But opening it to everyone is not safe; open it only for the specific IP (the backend server).
 
 ### Command
 
 ```bash
-# শুধু backend server এর IP থেকে 27017 port এ connection allow করো
+# Allow connections on port 27017 only from the backend server's IP
 firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<backend-server-ip>/32" port protocol="tcp" port="27017" accept'
 
-# Rule টা apply করো
+# Apply the rule
 firewall-cmd --reload
 ```
 
-> **⚠️ `<backend-server-ip>` replace করতে হবে।** যে server থেকে backend application MongoDB তে connect করবে সেই server এর IP। Backend team বা DevOps team এর কাছ থেকে নিশ্চিত করে নাও।
+> **⚠️ Replace `<backend-server-ip>`.** It is the IP of the server from which the backend application will connect to MongoDB. Confirm it with the backend team or the DevOps team.
 
-> **`/32` মানে:** এটা একটা single IP address — শুধু ঐ একটা IP থেকে connection আসবে। Range দিতে হলে `/24` ইত্যাদি ব্যবহার হয়।
+> **What `/32` means:** a single IP address; only connections from that one IP are allowed. For a range, use something like `/24`.
 
-### Verify করো
+### Verify
 
 ```bash
 firewall-cmd --list-all
 ```
 
-Output এ `rich rules` section এ তোমার rule দেখাবে।
+The `rich rules` section of the output should show your rule.
 
-### তোমার নিজের machine থেকে access দরকার হলে
+### If you need access from your own machine
 
-DBA হিসেবে তোমার local machine থেকে যদি কোনো tool দিয়ে connect করতে চাও:
+As the DBA, if you want to connect from your local machine with some tool:
 
 ```bash
 firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<tomar-machine-ip>/32" port protocol="tcp" port="27017" accept'
@@ -481,27 +481,27 @@ firewall-cmd --reload
 
 ---
 
-## ধাপ ৯ — Application Database এবং User তৈরি করা
+## Step 9 — Create the Application Database and User
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-Admin user দিয়ে application connect করানো উচিত না — security risk। প্রতিটা application বা service এর জন্য আলাদা user তৈরি করতে হয় যার শুধু নিজের database এ permission আছে।
+The application should not connect with the admin user; that is a security risk. Create a separate user for each application or service, with permission only on its own database.
 
-### Login করো
+### Log in
 
 ```bash
 mongosh -u admin -p <password> --authenticationDatabase admin
 ```
 
-### Database এবং User তৈরি করো
+### Create the database and user
 
-> **⚠️ তোমার application এ কোন কোন database লাগবে সেটা backend team এর কাছ থেকে নিশ্চিত করে নাও আগে।** নিচে একটা example pattern দেওয়া হলো।
+> **⚠️ First confirm with the backend team which databases your application needs.** An example pattern is given below.
 
 ```javascript
-// যে database এ user তৈরি করবে সেখানে switch করো
+// Switch to the database you are creating the user in
 use <database_name>
 
-// User তৈরি করো — শুধু এই database এ readWrite permission দিয়ে
+// Create the user, with readWrite permission on this database only
 db.createUser({
   user: "<app_user_name>",
   pwd:  "<app_user_password>",
@@ -509,43 +509,43 @@ db.createUser({
 })
 ```
 
-**`readWrite` role মানে:**
-- Data পড়তে পারবে (SELECT এর equivalent)
-- Data লিখতে পারবে (INSERT/UPDATE/DELETE এর equivalent)
-- Database drop করতে পারবে না
-- অন্য user তৈরি করতে পারবে না
-- অন্য database দেখতে পারবে না
+**What the `readWrite` role means:**
+- Can read data (equivalent to SELECT)
+- Can write data (equivalent to INSERT/UPDATE/DELETE)
+- Cannot drop the database
+- Cannot create other users
+- Cannot see other databases
 
-### Collection তৈরি করো (optional)
+### Create a collection (optional)
 
-MongoDB তে collection প্রথম insert এর সময় automatically তৈরি হয়। কিন্তু explicitly তৈরি করে confirm করা যায়:
+In MongoDB, a collection is created automatically on the first insert. But you can create it explicitly to confirm:
 
 ```javascript
 use <database_name>
 db.createCollection("<collection_name>")
 ```
 
-Collection মানে relational database এর table এর equivalent — তবে fixed schema নেই।
+A collection is the equivalent of a table in a relational database, but without a fixed schema.
 
-### App user এর connection verify করো
+### Verify the app user's connection
 
-নতুন terminal এ বা exit করে:
+In a new terminal, or after exiting:
 
 ```bash
 mongosh -u <app_user_name> -p <app_user_password> --authenticationDatabase <database_name>
 ```
 
-Connect হলে সফল। এই user দিয়ে অন্য database এ ঢোকার চেষ্টা করলে `Unauthorized` দেবে — এটাই expected।
+If it connects, it worked. Trying to enter another database with this user should give `Unauthorized`, which is expected.
 
 ---
 
-## ধাপ ১০ — Backup Setup করা
+## Step 10 — Set Up Backups
 
-### কী হচ্ছে এখানে?
+### What is happening here?
 
-`mongodump` MongoDB এর official backup tool। এটা সব data BSON format এ export করে — পরে `mongorestore` দিয়ে যেকোনো MongoDB তে restore করা যায়।
+`mongodump` is MongoDB's official backup tool. It exports all data in BSON format, which can later be restored into any MongoDB with `mongorestore`.
 
-### Manual backup (যেকোনো সময় চালাতে পারবে)
+### Manual backup (can be run at any time)
 
 ```bash
 mongodump \
@@ -556,11 +556,11 @@ mongodump \
   --gzip
 ```
 
-`--gzip` — Output compress করে। Size অনেক কমে যায়।
+`--gzip`: compresses the output. The size drops a lot.
 
-`$(date +%Y%m%d_%H%M%S)` — Folder এর নামে timestamp বসে, যেমন `20250405_143022`।
+`$(date +%Y%m%d_%H%M%S)`: puts a timestamp in the folder name, for example `20250405_143022`.
 
-### Automated daily backup script তৈরি করো
+### Create the automated daily backup script
 
 ```bash
 cat > /usr/local/bin/mongo_backup.sh << 'EOF'
@@ -578,52 +578,52 @@ mongodump \
   --out "$BACKUP_DIR/backup_$DATE" \
   --gzip
 
-# পুরনো backup মুছো (7 দিনের বেশি পুরনো)
+# Delete old backups (older than 7 days)
 find "$BACKUP_DIR" -maxdepth 1 -type d -mtime +$RETENTION_DAYS -exec rm -rf {} \;
 
 echo "$(date): Backup completed — $BACKUP_DIR/backup_$DATE" >> /var/log/mongo_backup.log
 EOF
 ```
 
-> **⚠️ Script এ `<password>` replace করতে হবে।** Admin এর actual password বসাও।
+> **⚠️ Replace `<password>` in the script.** Put the admin's actual password.
 
-Script কে executable করো:
+Make the script executable:
 
 ```bash
 chmod 700 /usr/local/bin/mongo_backup.sh
 ```
 
-`chmod 700` — শুধু owner (root) read/write/execute করতে পারবে। অন্য কেউ এই file এর content দেখতে পারবে না — password এর জন্য জরুরি।
+`chmod 700`: only the owner (root) can read, write and execute. Nobody else can see the file's content, which matters because it contains a password.
 
-### Cron দিয়ে schedule করো
+### Schedule it with cron
 
 ```bash
 crontab -e
 ```
 
-এই line যোগ করো:
+Add this line:
 
 ```cron
 0 3 * * * /usr/local/bin/mongo_backup.sh
 ```
 
-**Cron syntax মানে:** `মিনিট ঘণ্টা দিন মাস সপ্তাহের_দিন`
+**Cron syntax:** `minute hour day month day_of_week`
 
-`0 3 * * *` = প্রতিদিন রাত ৩:০০ তে। `*` মানে "সব"।
+`0 3 * * *` = every day at 3:00 AM. `*` means "every".
 
-### Backup manually test করো
+### Test the backup manually
 
 ```bash
 /usr/local/bin/mongo_backup.sh
 
-# Log দেখো
+# Check the log
 cat /var/log/mongo_backup.log
 
-# Backup folder দেখো
+# Check the backup folder
 ls -lh /var/backups/mongodb/
 ```
 
-### Restore করার পদ্ধতি (দরকার হলে)
+### Restore procedure (when needed)
 
 ```bash
 mongorestore \
@@ -635,38 +635,38 @@ mongorestore \
   /var/backups/mongodb/<backup_folder_name>
 ```
 
-`--drop` — Restore করার আগে existing collection drop করে নেয়। এতে duplicate document আসে না। যদি existing data রেখে merge করতে চাও তাহলে `--drop` বাদ দাও।
+`--drop`: drops the existing collection before restoring, which avoids duplicate documents. If you want to keep existing data and merge, leave out `--drop`.
 
 ---
 
-## দরকারি Commands — Quick Reference
+## Useful Commands: Quick Reference
 
 ### Connection
 
 ```bash
-# Admin হিসেবে login
+# Log in as admin
 mongosh -u admin -p <password> --authenticationDatabase admin
 
-# App user হিসেবে login
+# Log in as the app user
 mongosh -u <user> -p <password> --authenticationDatabase <database_name>
 
-# Remote server থেকে connect
+# Connect from a remote server
 mongosh --host <db-server-ip> --port 27017 -u admin -p <password> --authenticationDatabase admin
 ```
 
-### Shell এর ভেতরে
+### Inside the shell
 
 ```javascript
-// সব database দেখো
+// Show all databases
 show dbs
 
-// Database switch করো
+// Switch database
 use <database_name>
 
-// Current database কোনটা
+// Show the current database
 db
 
-// Collections দেখো
+// Show collections
 show collections
 
 // Replica set status
@@ -675,41 +675,41 @@ rs.status()
 // Server statistics
 db.serverStatus()
 
-// Active operations দেখো
+// Show active operations
 db.currentOp({ "active": true })
 
-// Shell থেকে বের হও
+// Leave the shell
 exit
 ```
 
 ### User Management
 
 ```javascript
-// সব user দেখো (admin database এ থেকে)
+// Show all users (from the admin database)
 use admin
 db.system.users.find().pretty()
 
-// Password change করো
+// Change a password
 db.changeUserPassword("<username>", "<new_password>")
 
-// User এর extra role দাও
+// Give a user an extra role
 db.grantRolesToUser("<username>", [{ role: "readWrite", db: "<another_db>" }])
 
-// User delete করো
+// Delete a user
 use <database_where_user_was_created>
 db.dropUser("<username>")
 ```
 
-### Log দেখা
+### Viewing logs
 
 ```bash
 # Live log
 tail -f /var/log/mongodb/mongod.log
 
-# শুধু slow operation গুলো
+# Only the slow operations
 tail -f /var/log/mongodb/mongod.log | grep -i "slow"
 
-# Error গুলো
+# Errors
 grep -i "error\|failed" /var/log/mongodb/mongod.log
 
 # Backup log
@@ -727,21 +727,21 @@ systemctl status mongod
 
 ---
 
-## MongoDB Roles — কোনটা কাকে দেবে
+## MongoDB Roles: Which One to Give to Whom
 
-| Role | কী পারে | কাকে দেবে |
+| Role | What it can do | Give it to |
 |------|---------|-----------|
-| `root` | সব database এ সব কাজ | শুধু DBA admin user কে |
-| `readWrite` | নির্দিষ্ট database এ read + write | Application user কে |
-| `read` | নির্দিষ্ট database এ শুধু read | Reporting বা read-only tool কে |
-| `dbAdmin` | Index তৈরি, schema management — data access নেই | Developer যে schema manage করে |
-| `userAdmin` | নির্দিষ্ট database এ user তৈরি/manage | Secondary admin কে |
+| `root` | Everything on all databases | Only the DBA admin user |
+| `readWrite` | Read + write on a specific database | The application user |
+| `read` | Read only on a specific database | Reporting or read-only tools |
+| `dbAdmin` | Index creation, schema management; no data access | A developer who manages the schema |
+| `userAdmin` | Create/manage users on a specific database | A secondary admin |
 
 ---
 
 ## Key File Locations
 
-| কী | কোথায় |
+| What | Where |
 |----|--------|
 | Configuration file | `/etc/mongod.conf` |
 | Data directory | `/var/lib/mongo` |
@@ -753,9 +753,9 @@ systemctl status mongod
 
 ---
 
-## সম্পূর্ণ Uninstall (দরকার হলে)
+## Complete Uninstall (when needed)
 
-> **⚠️ এটা run করলে সব data চিরতরে মুছে যাবে। আগে verified backup নাও।**
+> **⚠️ Running this permanently deletes all data. Take a verified backup first.**
 
 ```bash
 systemctl stop mongod
@@ -768,21 +768,21 @@ rm -f /etc/mongod.conf
 
 ---
 
-## জিনিসগুলো যা তোমাকে আগে থেকে জেনে নিতে হবে
+## Things You Need to Know in Advance
 
-এগুলো এই guide এ দেওয়া সম্ভব না — তোমার specific environment এর উপর নির্ভর করে:
+These cannot be provided in this guide; they depend on your specific environment:
 
-- [ ] **DB server এর নিজের IP** — `ip addr show` দিয়ে পাবে, `bindIp` তে বসাতে হবে
-- [ ] **Backend server এর IP** — DevOps বা backend team এর কাছ থেকে নাও, firewall rule এ লাগবে
-- [ ] **কোন কোন database লাগবে** — Backend team এর কাছ থেকে exact database name নাও
-- [ ] **কোন কোন application user লাগবে** — Backend team এর কাছ থেকে user এবং কোন database এ access লাগবে জেনে নাও
-- [ ] **Admin password কী হবে** — Strong password ঠিক করো এবং team password manager এ রাখো
-- [ ] **Backup কতদিনের রাখতে হবে** — Script এ `RETENTION_DAYS` adjust করো (default 7 দিন রেখেছি)
-- [ ] **Backup কখন চলবে** — Cron schedule বদলাও যদি রাত ৩টা suitable না হয়
+- [ ] **The DB server's own IP**: get it with `ip addr show`; it goes into `bindIp`
+- [ ] **The backend server's IP**: get it from the DevOps or backend team; needed for the firewall rule
+- [ ] **Which databases are needed**: get the exact database names from the backend team
+- [ ] **Which application users are needed**: ask the backend team for the users and which database each needs access to
+- [ ] **What the admin password will be**: choose a strong password and store it in the team password manager
+- [ ] **How long to keep backups**: adjust `RETENTION_DAYS` in the script (default is 7 days)
+- [ ] **When backups run**: change the cron schedule if 3 AM is not suitable
 
 ---
 
-*Document শেষ — MongoDB 8.0 | Rocky Linux 9*
+*End of document | MongoDB 8.0 | Rocky Linux 9*
 
 ---
 
@@ -793,58 +793,58 @@ rm -f /etc/mongod.conf
 
 ---
 
-## Migration এর আগে বুঝে নাও
+## Understand This Before Migrating
 
-MongoDB migration এ PostgreSQL এর মতো version downgrade এর সমস্যা নেই — `mongodump` এবং `mongorestore` version এর ব্যাপারে অনেক flexible। তুমি যে version এর MongoDB থেকেই dump করো, latest MongoDB তে restore করা যায়।
+MongoDB migration does not have PostgreSQL's version-downgrade problem: `mongodump` and `mongorestore` are very flexible about versions. Whatever version of MongoDB you dump from, you can restore into the latest MongoDB.
 
-এখানে method হলো:
+The method here is:
 
 ```
-mongodump (Combined Server Docker থেকে BSON বের করো)
+mongodump (export BSON from the Combined Server's Docker container)
        ↓
 transfer to new server
        ↓
-mongorestore (New DB Server এ restore করো)
+mongorestore (restore on the New DB Server)
 ```
 
-এই method এ:
-- ✅ কোনো data loss নেই
+With this method:
+- ✅ No data loss
 - ✅ Downtime controlled
-- ✅ Rollback সহজ — combined server এর MongoDB container কখনো বন্ধ করা হয় না
-- ✅ Version flexibility আছে
+- ✅ Rollback is easy: the combined server's MongoDB container is never stopped
+- ✅ Version flexibility
 
 ---
 
-## Migration এর আগে যা করতে হবে
+## What to Do Before Migrating
 
-### ১. Source এ data size দেখো
+### 1. Check the data size on the source
 
 ```bash
-# Combined server এ
+# On the combined server
 docker exec <mongo-container-name> mongosh \
   -u admin -p <password> \
   --authenticationDatabase admin \
   --eval "db.adminCommand({ listDatabases: 1 })"
 ```
 
-প্রতিটা database এর `sizeOnDisk` note করো — dump এবং transfer কতক্ষণ লাগবে আন্দাজ করতে পারবে।
+Note the `sizeOnDisk` of each database; it lets you estimate how long the dump and transfer will take.
 
-### ২. New server এ disk space দেখো
+### 2. Check disk space on the new server
 
 ```bash
 df -h /var/backups
 df -h /tmp
 ```
 
-Source database এর total size এর কমপক্ষে ২ গুণ free space রাখো।
+Keep at least 2 times the total size of the source databases as free space.
 
-### ৩. Connectivity test করো
+### 3. Test connectivity
 
 ```bash
-# New DB server থেকে combined server এ
+# From the new DB server to the combined server
 ping <combined-server-ip>
 
-# Combined server থেকে new server এ SSH test
+# SSH test from the combined server to the new server
 ssh user@<new-db-server-ip> "echo 'ok'"
 ```
 
@@ -852,37 +852,37 @@ ssh user@<new-db-server-ip> "echo 'ok'"
 
 ## Migration — Step by Step
 
-### ওভারভিউ: কোন server এ কী করছো
+### Overview: what you do on which server
 
 ```
 Combined Server                    New DB Server
-(চলছে)                             (ready, কিন্তু empty)
+(running)                          (ready, but empty)
     │                                    │
     │── pre-check ──────────────────────▶│
     │                                    │
-[Downtime শুরু]                          │
+[Downtime starts]                        │
     │                                    │
-    │── app containers বন্ধ             │
+    │── app containers stopped           │
     │                                    │
     │── final mongodump ────────────────▶│ (transfer)
     │                                    │
-    │   DB container চলছেই              │── mongorestore
-    │   (rollback এর জন্য)              │
+    │   DB container keeps running       │── mongorestore
+    │   (for rollback)                   │
     │                                    │── data verify
     │                                    │
     │◀── backend reconnects ────────────│
     │                                    │
-[Downtime শেষ]                           │
+[Downtime ends]                          │
 ```
 
 ---
 
-### Migration ধাপ ১ — Pre-Migration Dry Run (Downtime এর আগে)
+### Migration Step 1: Pre-Migration Dry Run (Before Downtime)
 
-App বন্ধ না করে একটা test dump নাও। কতক্ষণ লাগে সেটা measure করো।
+Take a test dump without stopping the app. Measure how long it takes.
 
 ```bash
-# Combined server এ
+# On the combined server
 time docker exec <mongo-container-name> mongodump \
   --authenticationDatabase admin \
   -u admin \
@@ -890,20 +890,20 @@ time docker exec <mongo-container-name> mongodump \
   --out /tmp/mongo_test_dump \
   --gzip
 
-# Dump folder এর size দেখো
+# Check the size of the dump folder
 docker exec <mongo-container-name> du -sh /tmp/mongo_test_dump
 
-# Dump বের করে নাও container থেকে
+# Copy the dump out of the container
 docker cp <mongo-container-name>:/tmp/mongo_test_dump /tmp/mongo_test_dump
 
-# New server এ transfer speed test করো
+# Test the transfer speed to the new server
 time scp -r /tmp/mongo_test_dump user@<new-db-server-ip>:/tmp/mongo_test_dump
 ```
 
-**Test dump টা new server এ restore করে দেখো:**
+**Restore the test dump on the new server to check it:**
 
 ```bash
-# New DB server এ
+# On the new DB server
 mongorestore \
   --authenticationDatabase admin \
   -u admin \
@@ -912,37 +912,37 @@ mongorestore \
   --gzip \
   /tmp/mongo_test_dump
 
-# কোনো error আসলে দেখো
-# Successful হলে collection count check করো
+# If any error appears, look at it
+# If successful, check the collection counts
 ```
 
 ---
 
-### Migration ধাপ ২ — Downtime Window শুরু
+### Migration Step 2: Start the Downtime Window
 
-**Application team কে জানাও।**
+**Tell the application team.**
 
 ```bash
-# Combined server এ — শুধু app containers বন্ধ করো
+# On the combined server: stop only the app containers
 docker stop <frontend-container-name> <backend-container-name>
 
-# Confirm করো
+# Confirm
 docker ps
-# শুধু DB containers দেখাবে
+# Should show only the DB containers
 ```
 
-MongoDB container বন্ধ করবে না — rollback এর জন্য।
+Do not stop the MongoDB container; it is needed for rollback.
 
 ---
 
-### Migration ধাপ ৩ — Final Dump নেওয়া
+### Migration Step 3: Take the Final Dump
 
-App বন্ধ, নতুন write আসছে না — এখন final dump নাও।
+The app is stopped and no new writes are coming in. Take the final dump now.
 
 ```bash
-# Combined server এ
+# On the combined server
 
-# Container এর ভেতরে dump করো
+# Dump inside the container
 docker exec <mongo-container-name> mongodump \
   --authenticationDatabase admin \
   -u admin \
@@ -950,8 +950,8 @@ docker exec <mongo-container-name> mongodump \
   --out /tmp/mongo_final_$(date +%Y%m%d_%H%M%S) \
   --gzip
 
-# Dump টা container থেকে host এ বের করে নাও
-# (container এর ভেতরের path টা note করো আগে)
+# Copy the dump out of the container to the host
+# (note the path inside the container first)
 DUMP_NAME=$(docker exec <mongo-container-name> ls /tmp | grep mongo_final | tail -1)
 docker cp <mongo-container-name>:/tmp/$DUMP_NAME /tmp/$DUMP_NAME
 
@@ -959,30 +959,30 @@ echo "Dump ready: /tmp/$DUMP_NAME"
 ls -lh /tmp/$DUMP_NAME
 ```
 
-**`--gzip` কেন:** Dump files compress হয় — size অনেক কমে, transfer দ্রুত হয়।
+**Why `--gzip`:** the dump files are compressed, so the size drops a lot and the transfer is faster.
 
-**`mongodump` কী করে:** প্রতিটা database এর প্রতিটা collection আলাদা `.bson` file এ export করে। Metadata (indexes, collection options) আলাদা `.json` file এ থাকে।
+**What `mongodump` does:** exports every collection of every database to its own `.bson` file. Metadata (indexes, collection options) goes into separate `.json` files.
 
 ---
 
-### Migration ধাপ ৪ — Dump Transfer করা
+### Migration Step 4: Transfer the Dump
 
 ```bash
-# Combined server থেকে new DB server এ
+# From the combined server to the new DB server
 scp -r /tmp/$DUMP_NAME user@<new-db-server-ip>:/tmp/
 
-# Transfer verify করো
+# Verify the transfer
 ssh user@<new-db-server-ip> "du -sh /tmp/$DUMP_NAME"
 ```
 
-দুই জায়গায় size same হওয়া উচিত।
+The size should be the same in both places.
 
 ---
 
-### Migration ধাপ ৫ — New Server এ Restore করা
+### Migration Step 5: Restore on the New Server
 
 ```bash
-# New DB server এ
+# On the new DB server
 mongorestore \
   --authenticationDatabase admin \
   -u admin \
@@ -992,41 +992,41 @@ mongorestore \
   /tmp/<dump_folder_name> \
   2>&1 | tee /tmp/mongo_restore_log.txt
 
-# Error আছে কিনা দেখো
+# Check for errors
 grep -i "error\|failed" /tmp/mongo_restore_log.txt
 ```
 
-**`--drop`:** Restore এর আগে existing collection drop করে। New server এ এখনো কোনো data নেই, তবু দেওয়া ভালো — idempotent হয়।
+**`--drop`:** drops the existing collection before restoring. The new server has no data yet, but it is still good to include; it makes the restore idempotent.
 
-**Restore কী করে:** প্রতিটা `.bson` file থেকে documents insert করে, `.json` file দেখে indexes recreate করে।
+**What the restore does:** inserts documents from each `.bson` file and recreates the indexes from the `.json` files.
 
 ---
 
-### Migration ধাপ ৬ — Data Verify করা
+### Migration Step 6: Verify the Data
 
-**New server এ:**
+**On the new server:**
 
 ```bash
 mongosh -u admin -p <password> --authenticationDatabase admin
 ```
 
 ```javascript
-// সব database দেখো
+// Show all databases
 show dbs
 
-// প্রতিটা important database এ যাও
+// Go into each important database
 use <database_name>
 
-// Collections দেখো
+// Show collections
 show collections
 
-// Critical collection এর document count দেখো
+// Check the document count of critical collections
 db.<collection_name>.countDocuments()
 
 exit
 ```
 
-**Combined server এ একই count করো:**
+**Run the same counts on the combined server:**
 
 ```bash
 docker exec <mongo-container-name> mongosh \
@@ -1035,49 +1035,49 @@ docker exec <mongo-container-name> mongosh \
   --eval "use <database_name>; db.<collection_name>.countDocuments()"
 ```
 
-Count same হলে migration successful।
+If the counts match, the migration succeeded.
 
-> **⚠️ যদি count আলাদা হয়:** Rollback করো — app containers combined server এ উঠিয়ে দাও এবং investigate করো।
+> **⚠️ If the counts differ:** roll back: bring the app containers up on the combined server again, and investigate.
 
 ---
 
-### Migration ধাপ ৭ — Application Reconnect করা
+### Migration Step 7: Reconnect the Application
 
-Data verify হলে backend team কে জানাও। তারা connection string update করবে:
+Once the data is verified, tell the backend team. They will update the connection string:
 
 ```
-পুরনো: mongodb://admin:<pass>@<combined-server-ip>:27017/<dbname>?authSource=admin
-নতুন:  mongodb://<app_user>:<pass>@<new-db-server-ip>:27017/<dbname>?authSource=<dbname>
+Old: mongodb://admin:<pass>@<combined-server-ip>:27017/<dbname>?authSource=admin
+New: mongodb://<app_user>:<pass>@<new-db-server-ip>:27017/<dbname>?authSource=<dbname>
 ```
 
-Application উঠিয়ে test করো — login, data read, data write সব।
+Bring the application up and test everything: login, data reads, data writes.
 
-সব ঠিক থাকলে **downtime শেষ।**
+If everything is fine, **the downtime is over.**
 
 ---
 
 ### Rollback Plan
 
-যেকোনো ধাপে সমস্যা হলে:
+If there is a problem at any step:
 
 ```bash
-# Combined server এ — app আবার উঠিয়ে দাও
+# On the combined server: bring the app up again
 docker start <frontend-container-name> <backend-container-name>
 ```
 
-Combined server এর MongoDB container কখনো বন্ধ করা হয়নি। Data সেখানে অক্ষত আছে।
+The combined server's MongoDB container was never stopped. The data is intact there.
 
 ---
 
-## জিনিসগুলো যা Migration এর আগে জেনে নিতে হবে
+## Things to Know Before Migrating
 
-- [ ] **Combined server এ MongoDB container এর নাম** — `docker ps`
-- [ ] **Combined server এ MongoDB admin password**
-- [ ] **Backend server এর IP** — DevOps team এর কাছ থেকে
-- [ ] **কোন কোন database migrate করতে হবে** — Backend team confirm করবে
-- [ ] **Downtime window কখন** — Application team এর সাথে fix করো
-- [ ] **Rollback decision maker** — সমস্যা হলে কে decide করবে আগেই ঠিক করো
+- [ ] **The name of the MongoDB container on the combined server**: `docker ps`
+- [ ] **The MongoDB admin password on the combined server**
+- [ ] **The backend server's IP**: from the DevOps team
+- [ ] **Which databases need to be migrated**: the backend team will confirm
+- [ ] **When the downtime window is**: agree it with the application team
+- [ ] **Who decides on rollback**: decide in advance who makes the call if something goes wrong
 
 ---
 
-*MongoDB Migration section শেষ*
+*End of MongoDB Migration section*
