@@ -36,8 +36,8 @@ The minimum setup requires **3 masters + 3 replicas = 6 nodes**. Each master has
 - **Master** — Accepts read and write requests. Owns a range of hash slots.
 - **Replica** — Mirrors a master's data in real time. Promotes to master on failover.
 - **Hash Slot** — The unit of data distribution. 16,384 slots split across masters.
-- **Gossip Protocol** — Nodes communicate health status every second using a separate port (`data port + 10000`).
-- **Failover** — Automatic. When a master goes unreachable for `cluster-node-timeout` ms, remaining nodes vote to promote its replica.
+- **Gossip Protocol** — Nodes exchange health status over the cluster bus (each node pings a few other nodes every second, and any node that does not answer within `cluster-node-timeout` is probed directly) on a separate port (`data port + 10000`).
+- **Failover** — Automatic. When a master goes unreachable for `cluster-node-timeout` ms, the replica of that master asks the remaining masters for votes, and is promoted when a majority of masters agree.
 
 ---
 
@@ -83,15 +83,15 @@ graph TD
 ```mermaid
 sequenceDiagram
     participant VM1 as VM1 Master A
-    participant VM2 as VM2
-    participant VM3 as VM3
+    participant VM2 as VM2 Replica of A
+    participant VM3 as VM3 Masters
 
-    VM1->>VM2: Gossip ping every 1s
-    VM1->>VM3: Gossip ping every 1s
+    VM1->>VM2: Cluster bus pings
+    VM1->>VM3: Cluster bus pings
     Note over VM1: VM1 goes down
-    Note over VM2: No ping from VM1 for 5s
-    VM2->>VM3: Vote to promote Replica of A
-    VM3->>VM2: Vote granted
+    Note over VM2: No reply from VM1 for cluster-node-timeout (5s)
+    VM2->>VM3: Request votes (failover auth request)
+    VM3->>VM2: Vote granted by masters
     Note over VM2: VM2:7002 becomes new Master A
     Note over VM2: Cluster state returns to ok
 ```
@@ -101,7 +101,7 @@ sequenceDiagram
 ## Prerequisites
 
 - 3 VMs running **Ubuntu 24.04 LTS**
-- Each VM: minimum **2GB RAM**, **2 vCPU**, **20GB disk**
+- Each VM: minimum **3GB RAM** (two instances, each capped at 768MB, plus the OS and fork copy-on-write headroom), **2 vCPU**, **20GB disk**
 - All VMs must reach each other over the network
 - SSH access to all 3 VMs
 - `sudo` privileges on all VMs
@@ -228,15 +228,15 @@ Each VM gets two config files — one per Redis instance. The only difference be
 | Parameter | Meaning |
 |-----------|---------|
 | `port` | Port this instance listens on for client connections |
-| `bind` | Which network interface to accept connections on. Using the VM's specific IP is more secure than `0.0.0.0` |
+| `bind` | Which network interface to accept connections on. Using the VM's specific IP is more secure than `0.0.0.0`. Note that cluster nodes also connect to each other on this address, so it must be the VM's reachable IP |
 | `daemonize yes` | Run as a background process so the terminal is not blocked |
 | `pidfile` | File where the process ID is stored. Used by systemd and `kill` commands to identify the process |
 | `logfile` | Where this instance writes its logs |
-| `dir` | Directory for RDB snapshot and AOF data files |
+| `dir` | Directory for RDB snapshot and AOF data files (in Redis 7.0+ the AOF is a set of files in the `appendonlydir/` subdirectory of `dir`, named after `appendfilename`) |
 | `cluster-enabled yes` | Enable cluster mode. Without this Redis runs as a standalone single-node server |
 | `cluster-config-file` | Redis auto-manages this file. It stores cluster topology — who is master, who is replica, which slots each node owns. Redis reads this on restart to rejoin the cluster without reconfiguration |
 | `cluster-node-timeout 5000` | Milliseconds before a non-responding node is considered down and failover begins. 5000ms (5 seconds) is balanced — low enough to recover quickly, high enough to avoid false failovers |
-| `appendonly yes` | Enable AOF persistence. Every write is logged to disk. On crash, Redis replays this log to recover data |
+| `appendonly yes` | Enable AOF persistence. Every write is appended to a log that Redis replays on restart (durability depends on `appendfsync`, default `everysec`) |
 | `maxmemory 768mb` | Maximum RAM this instance can use. With 3GB RAM per VM and 2 instances, 768MB each leaves sufficient memory for the OS |
 | `maxmemory-policy allkeys-lru` | When memory is full, evict the least recently used keys. Keeps Redis operational instead of refusing new writes |
 | `loglevel notice` | Log important events only — not too verbose, not too silent |
@@ -358,6 +358,8 @@ sudo ufw allow 17001/tcp
 sudo ufw allow 17002/tcp
 sudo ufw reload
 ```
+
+> Lab shortcut: these rules are open to any source. Outside a lab, restrict them to the peer VM IPs (for example `sudo ufw allow from 172.16.93.147 to any port 17001 proto tcp`). The cluster bus is not protected by `requirepass`.
 
 | Port | Reason |
 |------|--------|
@@ -484,7 +486,7 @@ redis-cli -c -h 172.16.93.146 -p 7001 -a <REDIS_PASSWORD>
 Write keys:
 
 ```
-SET name "Masud"
+SET name "Rafi"
 SET city "Dhaka"
 SET task "Redis Cluster"
 SET country "Bangladesh"
@@ -525,6 +527,8 @@ redis-cli -h 172.16.93.146 -p 7001 -a <REDIS_PASSWORD> cluster nodes | grep mast
 ```bash
 sudo kill $(cat /run/redis/redis_7001.pid)
 ```
+
+> `kill` sends SIGTERM, which is a graceful shutdown (Redis saves and closes cleanly). To simulate a crash use `sudo kill -9 $(cat /run/redis/redis_7001.pid)`.
 
 ### 10.3 Wait 10 seconds, then check from VM2
 
@@ -714,9 +718,9 @@ Expected: both services `active (running)`, `cluster_state:ok`.
 
 ### `DENIED Redis is running in protected mode`
 
-**Cause:** No password set and Redis is bound to a specific IP. Redis blocks external connections as a safety measure.
+**Cause:** Protected mode is active when the instance has no password set and no explicit `bind` directive (for example a config file that was not loaded). In that state Redis accepts only loopback connections as a safety measure.
 
-**Fix:** Add `requirepass` and `masterauth` to all config files, then restart all instances. Do not use `protected-mode no` — setting a password is the correct and secure approach.
+**Fix:** Make sure each instance loads its config file with the `bind` and `requirepass`/`masterauth` lines, then restart all instances. Do not use `protected-mode no` — setting a password is the correct and secure approach.
 
 ---
 

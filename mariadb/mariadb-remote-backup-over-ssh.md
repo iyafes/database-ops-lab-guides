@@ -231,7 +231,7 @@ flowchart LR
 **Limits to know:**
 
 - Reliable for **InnoDB** only. MyISAM tables are not covered by the snapshot.
-- DDL during the dump (`ALTER`/`DROP TABLE`) can break the snapshot.
+- DDL during the dump (`ALTER`/`DROP`/`RENAME`/`TRUNCATE TABLE`) is not isolated by the snapshot and can make a table's dumped contents wrong or make the dump fail, so avoid schema changes during the backup window.
 - Very long dumps on very busy systems grow the undo history.
 
 ## 2.3 Why each dump option is there
@@ -378,7 +378,7 @@ sequenceDiagram
 2. Run all verifications on the `.part` file.
 3. Only then `mv .part final`. On the same filesystem `mv` is **atomic**: the kernel's `rename(2)` swaps the name in one step. Nobody ever sees a half-renamed file.
 
-So **any file called `appdb_*.sql.gz` is always complete and verified.**
+So **any file called `appdb_*.sql.gz` was complete and verified when it got its final name.** (The script does not call `fsync`, so after a power cut the newest file is worth re-checking; the checker's `gzip -t` does that.)
 
 **Limit:** `kill -9` or a power cut skips the `trap`, so a stray `.part` can remain. It is harmless (nothing matches it) but worth deleting by hand now and then.
 
@@ -1752,7 +1752,7 @@ The most dangerous failure is silent. This check runs **separately** from the ba
 set -uo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-/backup/mariadb}"
-MAX_AGE_MIN="${MAX_AGE_MIN:-960}"     # 16 h: covers a 12 h schedule plus slack
+MAX_AGE_MIN="${MAX_AGE_MIN:-960}"     # 16 h: longest gap in the 06:00/15:00 schedule is 15 h, plus 1 h slack
 MIN_BYTES="${MIN_BYTES:-10240}"
 
 problems=()

@@ -113,7 +113,7 @@ sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD '<POSTGRES_PASSWORD>
 
 ```bash
 sudo tee -a /var/lib/pgsql/16/data/pg_hba.conf <<EOF
-host    all             all             172.16.93.0/24          md5
+host    all             all             172.16.93.0/24          scram-sha-256
 EOF
 ```
 
@@ -212,7 +212,7 @@ pg_dump -h 172.16.93.139 -p 5000 -U postgres \
   practicedb
 ```
 
-**`-t app_schema.employees`** — always include the schema name with the table name. Without the schema prefix, pg_dump may not find the table if it is not in the `public` schema.
+**`-t app_schema.employees`** — always include the schema name with the table name. Without the schema prefix, the pattern only matches tables visible in the current `search_path` (the same rules as psql `\d`), so a table outside `public` is not found.
 
 ```bash
 # Verify only employees is in this dump
@@ -505,7 +505,7 @@ Fix: Use `pg_restore` for custom, directory, and tar formats. Only plain SQL (`.
 **Mistake 5 — Forgetting `-t` schema prefix in pg_dump**
 
 ```bash
-# This may not find the table if it is not in public schema
+# Unqualified names only match tables visible in the search_path (usually public)
 pg_dump -t employees ...
 
 # Always include the schema name
@@ -516,7 +516,7 @@ pg_dump -t app_schema.employees ...
 
 **Mistake 6 — Dumping from a replica instead of primary**
 
-Dumps from replicas are generally safe for read-only data, but sequences may not reflect the latest values since sequence updates are not always replicated immediately. Always dump from the Primary (port 5000 via HAProxy) for consistent results.
+A dump can be taken from a standby, but data of unlogged tables and unlogged sequences is not included when dumping from a standby (they are not replicated), and a long dump can be cancelled by recovery conflicts. Dump from the Primary (port 5000 via HAProxy) unless you have a reason to offload the work and have checked these limits.
 
 ---
 

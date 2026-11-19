@@ -355,7 +355,7 @@ mysql -u root -p
 
 ```sql
 -- Create a user restricted to the Replica's IP address
-CREATE USER 'replica'@'172.16.93.141' IDENTIFIED WITH caching_sha2_password BY 'Replica@123';
+CREATE USER 'replica'@'172.16.93.141' IDENTIFIED WITH caching_sha2_password BY '<REPLICA_PASSWORD>';
 
 -- Grant only the replication privilege — nothing else
 GRANT REPLICATION SLAVE ON *.* TO 'replica'@'172.16.93.141';
@@ -371,7 +371,7 @@ It is a security best practice to create a separate user exclusively for replica
 Unlike PostgreSQL which has a separate `pg_hba.conf` file for IP-based access control, MySQL handles host restriction directly in the user definition using the `@'host'` syntax. This means the `replica` user can only connect from the Replica server's IP — no other machine can use this account.
 
 **Why `caching_sha2_password`?**  
-MySQL 8.4 removed `mysql_native_password` entirely. The only supported authentication plugin is `caching_sha2_password`. When used without SSL, the Replica must request the Master's public key to authenticate — this is handled by `GET_SOURCE_PUBLIC_KEY = 1` in the Replica configuration (covered in Part 5).
+In MySQL 8.4 the `mysql_native_password` plugin is deprecated and disabled by default (it can only be re-enabled with `--mysql-native-password=ON`, and it is removed in MySQL 9.0), so `caching_sha2_password` is the default and recommended plugin. When used without SSL, the Replica must request the Master's public key to authenticate — this is handled by `GET_SOURCE_PUBLIC_KEY = 1` in the Replica configuration (covered in Part 5).
 
 ### Step 4.5 — Verify the user was created
 
@@ -394,7 +394,7 @@ SELECT user, host, plugin FROM mysql.user WHERE user = 'replica';
 SHOW BINARY LOG STATUS\G
 ```
 
-> **Note:** `SHOW MASTER STATUS` is deprecated in MySQL 8.4. Use `SHOW BINARY LOG STATUS` instead.
+> **Note:** `SHOW MASTER STATUS` was removed in MySQL 8.4 (`SHOW BINARY LOG STATUS` replaces it, available since 8.2). Use `SHOW BINARY LOG STATUS` instead.
 
 **Example output:**
 ```
@@ -451,7 +451,7 @@ relay_log_recovery = ON
 | Parameter | Value | Purpose |
 |---|---|---|
 | `server-id` | `2` | Must be different from the Master's `server-id = 1`. Each server in the replication topology must have a unique ID. |
-| `read_only` | `ON` | Prevents any application or user (except replication threads and root) from writing directly to the Replica. This ensures data on the Replica only comes from the Master, keeping both servers in sync. |
+| `read_only` | `ON` | Prevents any application or user (except replication threads and accounts with the `SUPER` or `CONNECTION_ADMIN` privilege, such as root; use `super_read_only` to block those too) from writing directly to the Replica. This ensures data on the Replica only comes from the Master, keeping both servers in sync. |
 | `relay_log` | `/data/mysql/relay-bin.log` | The Relay Log is a local copy of the Master's binlog. The I/O Thread writes to it, and the SQL Thread reads from it. Setting the path keeps it with the data directory. |
 | `relay_log_recovery` | `ON` | If the Replica crashes, this setting discards any incomplete relay log files and re-fetches them from the Master on restart. This prevents data corruption from partially written relay logs. |
 
@@ -471,7 +471,7 @@ mysql -u root -p
 CHANGE REPLICATION SOURCE TO
   SOURCE_HOST           = '172.16.93.140',
   SOURCE_USER           = 'replica',
-  SOURCE_PASSWORD       = 'Replica@123',
+  SOURCE_PASSWORD       = '<REPLICA_PASSWORD>',
   SOURCE_LOG_FILE       = 'mysql-bin.000001',
   SOURCE_LOG_POS        = 887,
   GET_SOURCE_PUBLIC_KEY = 1;
@@ -483,9 +483,9 @@ CHANGE REPLICATION SOURCE TO
 |---|---|---|
 | `SOURCE_HOST` | `172.16.93.140` | IP address of the Master server |
 | `SOURCE_USER` | `replica` | The replication user created on the Master in Step 4.4 |
-| `SOURCE_PASSWORD` | `Replica@123` | Password for the replication user |
+| `SOURCE_PASSWORD` | `<REPLICA_PASSWORD>` | Password for the replication user |
 | `SOURCE_LOG_FILE` | `mysql-bin.000001` | The binlog filename recorded in Step 4.6 |
-| `SOURCE_LOG_POS` | `887` | The binlog position recorded in Step 4.6 — Replica will start reading from this exact point |
+| `SOURCE_LOG_POS` | `887` | The binlog position recorded in Step 4.6 — Replica will start reading from this exact point. This works here only because the Master holds no user data yet; with an existing dataset, first restore a consistent snapshot (for example from `mysqldump --source-data` or a physical backup) taken at that position |
 | `GET_SOURCE_PUBLIC_KEY` | `1` | **Critical for MySQL 8.4.** Since `caching_sha2_password` requires either SSL or a public key exchange, this tells the Replica to automatically fetch the Master's RSA public key for password authentication. Without this, the connection fails with an authentication error. |
 
 ---
@@ -506,7 +506,7 @@ START REPLICA;
 SHOW REPLICA STATUS\G
 ```
 
-> **Note:** `SHOW SLAVE STATUS` is deprecated in MySQL 8.4. Use `SHOW REPLICA STATUS` instead.
+> **Note:** `SHOW SLAVE STATUS` was removed in MySQL 8.4. Use `SHOW REPLICA STATUS` instead.
 
 ### Step 6.3 — Interpret the status output
 
@@ -599,7 +599,7 @@ RESET REPLICA ALL;
 CHANGE REPLICATION SOURCE TO
   SOURCE_HOST           = '172.16.93.140',
   SOURCE_USER           = 'replica',
-  SOURCE_PASSWORD       = 'Replica@123',
+  SOURCE_PASSWORD       = '<REPLICA_PASSWORD>',
   SOURCE_LOG_FILE       = 'mysql-bin.000001',
   SOURCE_LOG_POS        = 887,
   GET_SOURCE_PUBLIC_KEY = 1;
@@ -639,12 +639,12 @@ Repeat if `Replica_SQL_Running` is still `No`. Each run skips one failed transac
 
 **Symptom:** Error when trying to create a user with `mysql_native_password`.
 
-**Cause:** MySQL 8.4 completely removed `mysql_native_password`. It is no longer available as an authentication plugin.
+**Cause:** In MySQL 8.4 `mysql_native_password` is disabled by default (and removed in 9.0), so the plugin is not loaded.
 
 **Solution:** Use `caching_sha2_password` (the default) with `GET_SOURCE_PUBLIC_KEY = 1`:
 
 ```sql
-CREATE USER 'replica'@'172.16.93.141' IDENTIFIED WITH caching_sha2_password BY 'Replica@123';
+CREATE USER 'replica'@'172.16.93.141' IDENTIFIED WITH caching_sha2_password BY '<REPLICA_PASSWORD>';
 ```
 
 ---

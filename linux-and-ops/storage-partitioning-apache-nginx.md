@@ -165,6 +165,8 @@ UUID=c9516c06-7a49-441d-b1cb-6cc3db593217 /mnt/sdb_mount ext4 defaults 0 0
 /dev/vg0/lv0  /mnt/data  ext4  defaults  0  0
 ```
 
+For a data volume that is not needed to boot, add `nofail` to the options (`defaults,nofail`) so a missing disk does not drop the server into emergency mode, and check the file with `sudo findmnt --verify` before rebooting.
+
 ---
 
 ## Complete Procedure: Add New Disk to Existing LVM
@@ -221,8 +223,11 @@ sudo lvextend -l +100%FREE /dev/mapper/vg0-lv--0
 
 **Step 11:** Resize filesystem
 ```bash
-sudo resize2fs /dev/mapper/vg0-lv--0
+sudo resize2fs /dev/mapper/vg0-lv--0     # ext4
+# XFS instead: sudo xfs_growfs /mnt/data   (takes the mount point)
 ```
+
+> If you grew an existing disk instead of adding a new one (for example in a cloud console), first grow the partition (`sudo growpart /dev/sdb 1`) and the physical volume (`sudo pvresize /dev/sdb1`), then continue with Step 10. `lvextend -r` resizes the filesystem in the same step.
 
 **Step 12:** Verify disk usage
 ```bash
@@ -365,7 +370,6 @@ df -h /mnt/sdb_mount
 
 
 
-```markdown
 # Apache Web Server Installation on Ubuntu
 
 ## Step 1: Install Apache
@@ -500,7 +504,6 @@ sudo a2enmod rewrite           # Enable rewrite module (common)
 - Apply additional Apache security and performance configurations
 
 ---
-```
 
 
 # Nginx Web Server Installation on Ubuntu
@@ -574,7 +577,7 @@ server {
     
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/var/run/php/php7.4-fpm.sock;
+        fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;  # match your installed PHP-FPM version
     }
     
     location / {
@@ -584,13 +587,8 @@ server {
     # Client Side Caching Configuration
     location ~* \.(js|jpg|jpeg|gif|png|css|tgz|gz|rar|bz2|doc|pdf|ppt|tar|wav|bmp|rtf|swf|ico|flv|txt|woff|woff2|svg)$ {
         expires 90d;
-        add_header Pragma public;
         add_header Cache-Control public;
         add_header Vary Accept-Encoding;
-    }
-    
-    location @/ {
-        rewrite ^/(.+)$ /index.php?_route_=$1 last;
     }
     
     # Block .env files

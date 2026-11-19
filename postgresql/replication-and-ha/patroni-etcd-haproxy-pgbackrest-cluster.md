@@ -24,7 +24,7 @@
 
 ## Architecture Overview
 
-This guide sets up a fully automated PostgreSQL High Availability (HA) cluster that eliminates single points of failure. If the Primary database server crashes, the cluster automatically promotes a Replica to Primary within ~30 seconds without any manual intervention.
+This guide sets up a fully automated PostgreSQL High Availability (HA) cluster that eliminates single points of failure. If the Primary database server crashes, the cluster automatically promotes a Replica to Primary without manual intervention. The leader key TTL is 30 seconds, so after a hard crash promotion starts once that key expires.
 
 ### Why This Architecture
 
@@ -590,9 +590,9 @@ bootstrap:
     - data-checksums
 
   pg_hba:
-    - host replication replicator 127.0.0.1/32 md5
-    - host replication replicator 172.16.93.0/24 md5
-    - host all all 0.0.0.0/0 md5
+    - host replication replicator 127.0.0.1/32 scram-sha-256
+    - host replication replicator 172.16.93.0/24 scram-sha-256
+    - host all all 172.16.93.0/24 scram-sha-256
 
   users:
     admin:
@@ -665,9 +665,9 @@ bootstrap:
     - data-checksums
 
   pg_hba:
-    - host replication replicator 127.0.0.1/32 md5
-    - host replication replicator 172.16.93.0/24 md5
-    - host all all 0.0.0.0/0 md5
+    - host replication replicator 127.0.0.1/32 scram-sha-256
+    - host replication replicator 172.16.93.0/24 scram-sha-256
+    - host all all 172.16.93.0/24 scram-sha-256
 
   users:
     admin:
@@ -740,9 +740,9 @@ bootstrap:
     - data-checksums
 
   pg_hba:
-    - host replication replicator 127.0.0.1/32 md5
-    - host replication replicator 172.16.93.0/24 md5
-    - host all all 0.0.0.0/0 md5
+    - host replication replicator 127.0.0.1/32 scram-sha-256
+    - host replication replicator 172.16.93.0/24 scram-sha-256
+    - host all all 172.16.93.0/24 scram-sha-256
 
   users:
     admin:
@@ -798,7 +798,7 @@ EOF
 | `max_wal_senders` | Maximum simultaneous WAL streaming connections. Each Replica uses one. Set to 10 for headroom. |
 | `wal_log_hints: on` | Required for `pg_rewind` to work correctly. |
 | `initdb.data-checksums` | Enables page-level data checksums. Detects silent data corruption on disk. |
-| `pg_hba` | PostgreSQL access control. Line 2 (`172.16.93.0/24`) allows all nodes in the subnet to replicate. Line 3 allows any host to connect with a password — restrict to application server IPs in production. |
+| `pg_hba` | PostgreSQL access control. Line 2 (`172.16.93.0/24`) allows all nodes in the subnet to replicate. Line 3 allows any host in the lab subnet to connect with a password (SCRAM) — restrict it to application server or HAProxy IPs in production. |
 | `users.replicator` | Created during bootstrap with `replication` permission. Replicas authenticate as this user to stream WAL from the Primary. |
 | `postgresql.bin_dir` | Where Patroni finds PostgreSQL executables: `pg_ctl`, `initdb`, `pg_rewind`. |
 | `postgresql.pgpass` | Patroni writes passwords here for passwordless internal connections to PostgreSQL. |
@@ -1145,7 +1145,7 @@ psql -h 172.16.93.139 -p 5001 -U postgres -c "SELECT * FROM pg_stat_wal_receiver
 
 ### Scenario 1 — Planned Switchover
 
-Use when you need to take the current Primary offline for maintenance. Zero data loss.
+Use when you need to take the current Primary offline for maintenance. No data loss: Patroni shuts the old Primary down cleanly and promotes a Replica that has caught up.
 
 ```bash
 # Check current state first
@@ -1153,7 +1153,7 @@ patronictl -c /etc/patroni/patroni.yml list
 
 # Initiate switchover
 patronictl -c /etc/patroni/patroni.yml switchover postgres-cluster
-# Follow the prompts: select current Primary as master, choose candidate, confirm with 'y'
+# Follow the prompts: select current Primary as leader, choose candidate, confirm with 'y'
 ```
 
 After switchover:
@@ -1172,12 +1172,14 @@ http://172.16.93.139:7000
 
 ### Scenario 2 — Unplanned Failover Simulation
 
-Simulate a Primary crash:
+Simulate a Primary going away:
 
 ```bash
 # On the current Primary node
 sudo systemctl stop patroni
 ```
+
+A graceful `systemctl stop patroni` normally makes Patroni shut PostgreSQL down and release the leader key, so a Replica can be promoted before the TTL runs out. To exercise the TTL path, simulate a hard crash instead (for example power off or hard-reset the VM); the leader key then expires after the 30-second TTL and a Replica is promoted.
 
 Watch the automatic failover from another node (run repeatedly over 30-40 seconds):
 ```bash
@@ -1187,7 +1189,7 @@ patronictl -c /etc/patroni/patroni.yml list
 Timeline of events:
 1. Primary node shows `stopped`
 2. HAProxy marks the Primary DOWN after 3 failed checks (~9 seconds)
-3. After ~30 seconds (TTL expiry), a new Leader is elected
+3. A new Leader is elected: after a hard crash this happens once the 30-second TTL has expired; after a graceful stop it can happen sooner
 4. The new Leader shows an incremented TL number
 
 Bring the old Primary back online:
@@ -1207,7 +1209,9 @@ patronictl -c /etc/patroni/patroni.yml list
 
 ```bash
 psql -h 172.16.93.139 -p 5000 -U postgres -d testdb -c "SELECT * FROM employees;"
-# All rows must still be present on the new Primary — no data loss
+# Rows committed before the failover should be present on the new Primary.
+# (With asynchronous replication, an unplanned failover can lose the most recent
+# transactions that had not yet reached the Replica.)
 ```
 
 ---
@@ -1226,7 +1230,7 @@ etcdctl --endpoints=http://172.16.93.136:2379,http://172.16.93.137:2379,http://1
 
 # 3. Replication lag in bytes (run on Primary)
 psql -h 172.16.93.139 -p 5000 -U postgres -c \
-  "SELECT client_addr, state, pg_wal_lsn_diff(sent_lsn, replay_lsn) AS lag_bytes FROM pg_stat_replication;"
+  "SELECT client_addr, state, pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS lag_bytes FROM pg_stat_replication;"
 
 # 4. Replication slot status (inactive slots can fill disk with retained WAL)
 psql -h 172.16.93.139 -p 5000 -U postgres -c \
@@ -1439,9 +1443,9 @@ patronictl -c /etc/patroni/patroni.yml list
 # Planned Primary change (no data loss)
 patronictl -c /etc/patroni/patroni.yml switchover postgres-cluster
 
-# Emergency failover (when Primary is unresponsive)
+# Manual failover to a chosen Replica (when a planned switchover is not possible)
 patronictl -c /etc/patroni/patroni.yml failover postgres-cluster \
-  --master <current-primary> --candidate <target-node> --force
+  --candidate <target-node> --force
 
 # Edit cluster DCS configuration stored in etcd
 patronictl -c /etc/patroni/patroni.yml edit-config
@@ -1545,6 +1549,8 @@ etcdctl --endpoints=http://172.16.93.136:2379,http://172.16.93.137:2379,http://1
 ```
 
 > ⚠️ Must do this BEFORE starting etcd on pnode4. etcd uses Raft consensus — existing cluster must approve new member first.
+>
+> Note: this makes 4 voting etcd members. A 4-member cluster needs a quorum of 3 and still tolerates only one failure, so it is no more fault tolerant than 3 members. Keep an odd number of voters (3 or 5); add a fifth member or later remove one.
 
 **On pnode4 — install etcd:**
 ```bash
@@ -1675,9 +1681,9 @@ bootstrap:
     - data-checksums
 
   pg_hba:
-    - host replication replicator 127.0.0.1/32 md5
-    - host replication replicator 172.16.93.0/24 md5
-    - host all all 0.0.0.0/0 md5
+    - host replication replicator 127.0.0.1/32 scram-sha-256
+    - host replication replicator 172.16.93.0/24 scram-sha-256
+    - host all all 172.16.93.0/24 scram-sha-256
 
   users:
     admin:
@@ -1781,7 +1787,7 @@ patronictl -c /etc/patroni/patroni.yml list
 If the target node is **Leader**, switchover first:
 ```bash
 patronictl -c /etc/patroni/patroni.yml switchover postgres-cluster \
-  --master pnode2 --candidate pnode1 --scheduled now
+  --leader pnode2 --candidate pnode1 --scheduled now
 ```
 
 #### Step 1 — Stop Patroni on Target Node
@@ -1822,7 +1828,7 @@ sudo systemctl reload haproxy
 
 #### Step 4 — Replication Slot Cleanup
 
-Inactive slots cause Primary to retain WAL indefinitely — disk fills up over time.
+Inactive slots cause Primary to retain WAL indefinitely — disk fills up over time. (Recent Patroni versions can also drop slots of members that have been gone for a while, so check first; if the slot is already gone, the drop below returns an error you can ignore.)
 
 ```bash
 psql -h 172.16.93.136 -U postgres -c "SELECT slot_name, active FROM pg_replication_slots;"
@@ -1959,6 +1965,8 @@ etcdctl --endpoints=http://172.16.93.136:2379,http://172.16.93.138:2379,http://1
 # pnode2/etcd2 should now show as "started" alongside the other members
 ```
 
+> Note: with pnode4 still a member, this is 4 voting etcd members (an even count adds no extra fault tolerance). Return to 3 or 5 voters when convenient.
+
 #### Step 5 — Clean PostgreSQL Data and Start Patroni
 
 Patroni will detect it needs to clone from the Primary and will do so automatically.
@@ -1972,7 +1980,7 @@ sudo systemctl start patroni
 sudo journalctl -u patroni -f   # watch for clone progress
 ```
 
-Expected log output during clone:
+Example log output during clone (exact wording varies by version):
 ```
 INFO: establishing a new patroni connection to the postgres cluster
 INFO: cloning from 'pnode3' with pg_basebackup

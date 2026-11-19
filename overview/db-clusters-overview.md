@@ -73,7 +73,7 @@ graph TD
 | **6 — HAProxy config** | Configure HAProxy to health-check each Patroni API and route traffic to the leader | Applications need a single stable endpoint — HAProxy abstracts the changing leader so apps never need reconfiguration after failover | Edit `haproxy.cfg`, `systemctl start haproxy` |
 | **7 — pgBackRest setup** | Configure backup repo, create stanza, run first base backup, enable WAL archiving | Without backups, data loss from disk failure or accidental deletion cannot be recovered | `pgbackrest stanza-create`, `pgbackrest backup --type=full` |
 | **8 — Test replication** | Write data on leader, verify it appears on replicas | Confirms replication is actually working end-to-end | `psql` on leader, `SELECT` on replica |
-| **9 — Failover test** | Stop leader, watch Patroni elect new leader, verify HAProxy reroutes | The whole point of this stack is automatic failover — must be verified before calling setup complete | `patronictl failover` or `systemctl stop patroni` on leader |
+| **9 — Failover test** | Stop leader, watch Patroni elect new leader, verify HAProxy reroutes | The whole point of this stack is automatic failover — must be verified before calling setup complete | `patronictl switchover` (planned) or `systemctl stop patroni` on leader (unplanned-style) |
 | **10 — Recovery test** | Restore from pgBackRest backup and verify data | Backups are useless if restores do not work — always test recovery | `pgbackrest restore`, verify data |
 | **11 — Reboot test** | Reboot each VM, verify all services start in correct order and cluster is healthy | Services must start in the right order on boot — etcd first, then Patroni | `patronictl list`, HAProxy stats |
 
@@ -114,7 +114,7 @@ graph TD
 ### How it works
 - **Group Replication** uses Paxos consensus. Every write is sent to all members — a majority must certify and apply it before the transaction commits. With 3 members, majority = 2, so losing one member still keeps the cluster writable.
 - **MySQL Shell** (`mysqlsh`) is used only during setup to bootstrap the cluster, add members, and run pre-checks. It is not needed for normal operation.
-- **MySQL Router** reads cluster metadata at startup and monitors which node is PRIMARY. After failover, it detects the new PRIMARY within seconds and reroutes traffic automatically.
+- **MySQL Router** reads cluster metadata at startup and monitors which node is PRIMARY. After failover, it detects the new PRIMARY from the cluster metadata and reroutes traffic automatically.
 
 ### Difference from classic source–replica (binlog) replication
 
@@ -174,8 +174,8 @@ graph LR
 
 ### How it works
 - A client connects to any node. Redis computes `CRC16(key) % 16384` to find the slot. If the key is on a different node, Redis returns a `MOVED` redirect. With `-c` flag the client follows redirects automatically.
-- Nodes exchange health, slot ownership, and state every second via gossip on `data_port + 10000`.
-- If a master does not respond for `cluster-node-timeout` milliseconds, remaining nodes vote and promote its replica.
+- Nodes exchange health, slot ownership, and state via gossip on the cluster bus, `data_port + 10000`.
+- If a master does not respond for `cluster-node-timeout` milliseconds, its replica asks the remaining masters for votes and is promoted when a majority of masters agree.
 - When the failed master returns, it rejoins as a replica of the new master — no automatic failback.
 
 ### Setup Phases
@@ -192,7 +192,7 @@ graph LR
 | **7 — Create cluster** | Run cluster create command once from VM1 | Contacts all 6 nodes, assigns hash slot ranges to masters, and pairs each master with a replica on a different VM | `redis-cli --cluster create ... --cluster-replicas 1 -a password` |
 | **8 — Verify** | Check cluster state, node roles, slot coverage | Confirms all slots are assigned and all nodes are connected before writing data | `cluster info`, `cluster nodes` |
 | **9 — Test sharding** | Write keys, observe automatic redirects | Verifies data is actually distributed and the redirect mechanism works | `redis-cli -c`, `SET`, `GET` |
-| **10 — Failover test** | Kill a master, watch replica promote, restart and observe rejoin as replica | Validates automatic promotion — the core HA feature | `kill $(cat pidfile)`, `cluster nodes` from surviving node |
+| **10 — Failover test** | Kill a master, watch replica promote, restart and observe rejoin as replica | Validates automatic promotion — the core HA feature | `kill $(cat pidfile)` (SIGTERM is graceful; use `kill -9` to simulate a crash), `cluster nodes` from surviving node |
 | **11 — Systemd** | Create service files for both instances on each VM | Without systemd services Redis does not start after a VM reboot | `/etc/systemd/system/redis-700x.service` |
 | **12 — Boot fix** | Create `tmpfiles.d` rule so `/run/redis/` is recreated on every boot | `/run/` is a RAM-backed tmpfs wiped on reboot — Redis needs `/run/redis/` for its PID file and fails on first boot attempt without this rule | `/etc/tmpfiles.d/redis.conf` |
 | **13 — Reboot test** | Reboot a VM, verify Redis auto-starts and cluster recovers | Confirms systemd service, tmpfiles rule, and cluster rejoin all work after a cold start | `systemctl status`, `cluster info` |
@@ -294,7 +294,7 @@ graph LR
 | **2 — Configuration** | Edit `cassandra.yaml` — cluster name, seeds list, `listen_address`, `rpc_address`, snitch | All nodes must share the same `cluster_name` or they refuse to join. `listen_address` must be the VM's own IP | Edit `cassandra.yaml` (3 files, one per VM) |
 | **3 — Start cluster** | Start Cassandra sequentially — each node contacts seeds and joins the ring | Starting nodes too quickly causes bootstrap collisions — start VM1 first, wait for `UN` status, then start others | `systemctl start cassandra` sequentially |
 | **4 — Verify ring** | Check all nodes are Up/Normal and token distribution is even | `nodetool status` shows each node's state. Uneven token ranges mean some nodes handle more data than others | `nodetool status`, `nodetool ring` |
-| **5 — Create keyspace** | Create keyspace with replication strategy and factor | Keyspace defines how many data copies exist and where — wrong RF means less redundancy than expected | `CREATE KEYSPACE ... WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 3}` |
+| **5 — Create keyspace** | Create keyspace with replication strategy and factor | Keyspace defines how many data copies exist and where — wrong RF means less redundancy than expected | `CREATE KEYSPACE ... WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 3}` |
 | **6 — Create tables and insert data** | Create tables, insert rows, verify from any node | Tests that the coordinator correctly routes requests regardless of which node you connect to | `cqlsh`, `CREATE TABLE`, `INSERT`, `SELECT` from each node |
 | **7 — Test consistency levels** | Query with `ONE`, `QUORUM`, `ALL` and observe behavior | Makes the consistency tradeoffs concrete — you cannot tune Cassandra correctly without understanding this | `CONSISTENCY ONE`, `CONSISTENCY QUORUM`, run queries |
 | **8 — Node failure test** | Stop one node, query with `QUORUM` — cluster serves requests using remaining 2 | Proves RF=3 with `QUORUM` tolerates 1 node loss — the key availability claim of Cassandra | `systemctl stop cassandra`, CQL query |
@@ -348,10 +348,10 @@ Inside each node, the partition key's Murmur3 token determines which CPU shard h
 
 | Phase | What happens | Why | Key actions |
 |---|---|---|---|
-| **0 — Concept** | Understand shard-per-core model and how it differs from Cassandra's JVM threading | Without this context the `scylla_setup` step and SMP settings won't make sense | Read, understand |
+| **0 — Concept** | Understand shard-per-core model and how it differs from Cassandra's JVM threading | Without this context the `scylla_setup` step and shard settings won't make sense | Read, understand |
 | **1 — Environment** | Add ScyllaDB repo, install ScyllaDB, run `scylla_setup` | `scylla_setup` must run before first start — it configures kernel parameters and disk I/O scheduler that ScyllaDB requires | Add ScyllaDB repo, `dnf install scylla`, `scylla_setup` |
-| **2 — Configuration** | Edit `scylla.yaml` — cluster name, seeds, `listen_address`, SMP count | Same structure as `cassandra.yaml`. SMP sets how many cores ScyllaDB uses — one shard per core | Edit `scylla.yaml` (3 files, one per VM) |
-| **3 — Firewall** | Open CQL, gossip, and REST API ports | REST API port 10000 is used by `scyllatop` and monitoring — not needed by clients but valuable for observability | `firewall-cmd --add-port` for 9042, 7000, 10000 |
+| **2 — Configuration** | Edit `scylla.yaml` — cluster name, seeds, `listen_address`, snitch, auth | Same structure as `cassandra.yaml`. ScyllaDB runs one shard per CPU core automatically (core usage is controlled by `scylla_setup` and the `scylla.d` settings) | Edit `scylla.yaml` (3 files, one per VM) |
+| **3 — Firewall** | Open CQL, gossip, and REST API ports | REST API port 10000 is used by `scyllatop` and monitoring — not needed by clients but valuable for observability | `firewall-cmd --add-port` for 9042, 9142, 19042, 7000, 7001, 7199, 10000, 9180 |
 | **4 — Start cluster** | Start ScyllaDB on all nodes sequentially | Same reasoning as Cassandra — let first node stabilize before starting others | `systemctl start scylla-server` sequentially |
 | **5 — Verify ring** | Check all nodes joined and shard activity is visible | `nodetool status` confirms membership. `scyllatop` confirms shard-per-core model is active | `nodetool status`, `scyllatop` |
 | **6 — Keyspace and data** | Create keyspace and tables using CQL — identical to Cassandra | Verifies CQL compatibility and data operations work correctly | `cqlsh`, `CREATE KEYSPACE`, `INSERT`, `SELECT` |
@@ -392,14 +392,14 @@ Inside each node, the partition key's Murmur3 token determines which CPU shard h
 
 ### Failover and Consistency
 
-| DB | Failover | Approximate time | Data Consistency | External tools needed |
+| DB | Failover | Timing | Data Consistency | External tools needed |
 |---|---|---|---|---|
-| **PostgreSQL** | Automatic via Patroni | ~10–30 seconds | Strong — full ACID support | Patroni + etcd + HAProxy + pgBackRest |
-| **MySQL** | Automatic via Group Replication | ~5–10 seconds | Strong — Paxos, majority must agree before commit | MySQL Shell + MySQL Router |
-| **Redis** | Automatic via cluster vote | ~5–15 seconds | Eventual — async replication, minor data loss possible on failover | None |
-| **MongoDB** | Automatic election | ~10–15 seconds | Configurable — `writeConcern: majority` gives strong consistency | None |
-| **Cassandra** | Not needed — RF handles it | No downtime | Tunable — ONE / QUORUM / ALL per query | None |
-| **ScyllaDB** | Not needed — RF handles it | No downtime | Tunable — identical to Cassandra | None |
+| **PostgreSQL** | Automatic via Patroni | Depends on Patroni `ttl` / `loop_wait` and `retry_timeout` (not measured here) | Strong — full ACID support | Patroni + etcd + HAProxy + pgBackRest |
+| **MySQL** | Automatic via Group Replication | Depends on Group Replication timeouts (not measured here) | Strong — Paxos, majority must agree before commit | MySQL Shell + MySQL Router |
+| **Redis** | Automatic via cluster vote | Depends on `cluster-node-timeout` (5 s in the Redis guide) plus election time | Eventual — async replication, minor data loss possible on failover | None |
+| **MongoDB** | Automatic election | Depends on `electionTimeoutMillis` (default 10 s) plus election time | Configurable — `writeConcern: majority` gives strong consistency | None |
+| **Cassandra** | No election — masterless, RF handles it | Requests continue while enough replicas for the consistency level are up | Tunable — ONE / QUORUM / ALL per query | None |
+| **ScyllaDB** | No election — masterless, RF handles it | Same as Cassandra | Tunable — identical to Cassandra | None |
 
 ---
 
@@ -424,7 +424,7 @@ Inside each node, the partition key's Murmur3 token determines which CPU shard h
 | **MySQL** | Simple, fast reads, huge community, wide hosting support | Less feature-rich than PostgreSQL, Group Replication setup is complex, slow on large joins |
 | **Redis** | Extremely fast (in-memory), simple commands, versatile data types | Data lives in RAM so costly at scale, persistence is optional so data loss risk exists, cross-slot operations not supported in cluster |
 | **MongoDB** | Flexible schema, easy horizontal scaling, JSON-friendly, fast to develop with | Weak joins, higher memory usage, multi-document ACID transactions are expensive |
-| **Cassandra** | No single point of failure, linear write scalability, native multi-datacenter support | Slow on read-heavy workloads, complex data modeling required, JVM tuning is difficult, no joins |
+| **Cassandra** | No single point of failure, linear write scalability, native multi-datacenter support | Query-first data modeling required (reads are fast only for queries the tables were designed for), JVM/GC tuning needed, no joins |
 | **ScyllaDB** | All Cassandra advantages plus lower latency and less hardware required | Less mature than Cassandra, smaller community, some Cassandra features not yet supported |
 
 ---

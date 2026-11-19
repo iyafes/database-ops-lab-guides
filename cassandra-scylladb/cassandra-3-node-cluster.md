@@ -72,7 +72,7 @@ graph TD
 
 **Seed Nodes:** When a new node starts up for the first time, it does not know anything about the cluster. It contacts one of the configured seed nodes to get the initial cluster topology — who is in the cluster, what tokens they own, and how data is distributed. Seed nodes are only special at bootstrap time; after a node has joined, seeds have no ongoing special role.
 
-**Virtual Nodes (vnodes):** Each physical node is assigned `num_tokens` (256 in this setup) positions in the ring. This means data is distributed across many small token ranges per node rather than one large contiguous range. The benefit is automatic, even load balancing — adding or removing a node redistributes many small ranges rather than one large chunk.
+**Virtual Nodes (vnodes):** Each physical node is assigned `num_tokens` (256 in this setup; the default since Cassandra 4.0 is 16, which also works well and reduces repair and streaming overhead) positions in the ring. This means data is distributed across many small token ranges per node rather than one large contiguous range. The benefit is automatic, even load balancing — adding or removing a node redistributes many small ranges rather than one large chunk.
 
 **Replication Factor (RF=3):** Every row written to the cluster is stored on 3 nodes. The coordinator determines which nodes own the token range for a given partition key and writes to all of them. This means the cluster can lose any 1 node and still serve all data without interruption.
 
@@ -183,6 +183,8 @@ When Cassandra installs, it immediately starts in single-node mode and writes it
 sudo systemctl stop cassandra
 sudo rm -rf /var/lib/cassandra/data/system/*
 ```
+
+> Only do this on a freshly installed, empty node. On a node that holds data it deletes the node's identity (host ID and tokens).
 
 ### 1.6 — Configure /etc/hosts
 
@@ -460,9 +462,19 @@ cqlsh 172.16.93.152 -u admin -p <CASSANDRA_ADMIN_PASSWORD>
 ALTER ROLE cassandra WITH PASSWORD = '<STRONG_RANDOM_PASSWORD>' AND SUPERUSER = false AND LOGIN = false;
 ```
 
-> **Why not delete the cassandra role?** The `cassandra` role is internally protected — attempting to `DROP ROLE cassandra` returns an error. Setting `SUPERUSER = false` and `LOGIN = false` effectively locks it out.
+> **Why not delete the cassandra role?** This guide disables it instead of dropping it, so the default credentials can no longer be used. Setting `SUPERUSER = false` and `LOGIN = false` locks it out.
 
 > **Why reconnect as admin first?** Cassandra prevents a superuser from altering their own superuser status. You must be logged in as a *different* superuser (admin) to demote the cassandra account.
+
+**Increase the `system_auth` replication factor:** by default `system_auth` (roles and credentials) uses a replication factor of 1, so if the node holding that data is down, non-default users cannot log in. Raise it and repair:
+
+```sql
+ALTER KEYSPACE system_auth WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 3};
+```
+
+```bash
+nodetool repair system_auth
+```
 
 ---
 

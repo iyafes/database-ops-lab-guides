@@ -40,7 +40,7 @@ This guide walks through setting up a **PostgreSQL Master-Slave Streaming Replic
 
 - **Master Server** — accepts both READ and WRITE operations
 - **Slave Server** — accepts READ only; data is automatically synced from Master in real time
-- Any data written to Master is immediately replicated to Slave via WAL streaming
+- Data written to Master is streamed to Slave via WAL, typically within moments (replication is asynchronous by default)
 - Slave cannot accept any write operations (INSERT, UPDATE, DELETE)
 
 ---
@@ -62,13 +62,13 @@ Inside this directory:
 ├── base/             ← actual database files
 ├── global/           ← cluster-wide data (roles, users)
 ├── pg_wal/           ← Write-Ahead Log files
-├── postgresql.conf   ← main configuration file
-├── pg_hba.conf       ← authentication/access rules
 ├── PG_VERSION        ← version number
 └── postmaster.pid    ← running process ID
 ```
 
 > **One Cluster = One Data Directory = One PostgreSQL Instance**
+>
+> On Ubuntu (Debian packaging), `postgresql.conf` and `pg_hba.conf` live outside the data directory, in `/etc/postgresql/16/main/`. On other distributions they are usually inside the data directory.
 
 ---
 
@@ -276,6 +276,8 @@ Change to:
 wal_level = replica
 ```
 
+(`replica` is already the default since PostgreSQL 10; it is set explicitly here for clarity.)
+
 > **`wal_level`** — controls how much information is written to the WAL (Write-Ahead Log).
 > - `minimal` — minimum info, not enough for replication
 > - `replica` — includes all info needed for streaming replication ✅
@@ -295,7 +297,7 @@ Change to:
 max_wal_senders = 5
 ```
 
-> **`max_wal_senders`** — the maximum number of simultaneous WAL sender processes. Each Slave connected to this Master uses one WAL sender process. Setting `5` allows up to 5 Slave servers.
+> **`max_wal_senders`** — the maximum number of simultaneous WAL sender processes. Each Slave connected to this Master uses one WAL sender process, and `pg_basebackup` (including the `-Xs` stream) uses additional ones while it runs. `5` leaves headroom for this lab's single Slave.
 
 ---
 
@@ -311,7 +313,7 @@ Change to:
 wal_keep_size = 64
 ```
 
-> **`wal_keep_size`** — the minimum amount of WAL files (in MB) to keep on disk. If a Slave falls behind, it can catch up using these retained WAL files instead of requiring a full re-sync. `64` means keep at least 64 MB of WAL history.
+> **`wal_keep_size`** — the minimum amount of WAL files (in MB) to keep on disk. If a Slave falls behind, it can catch up using these retained WAL files instead of requiring a full re-sync. `64` means keep at least 64 MB of WAL history. This lab uses no replication slot, so a Slave that falls further behind than this (or stays offline long enough) cannot catch up and must be rebuilt with a new base backup. A physical replication slot avoids that, at the cost of WAL piling up on the Master if the Slave stays away.
 
 Save and exit: `Ctrl+X` → `Y` → `Enter`
 
@@ -328,7 +330,7 @@ sudo nano /etc/postgresql/16/main/pg_hba.conf
 Go to the very bottom of the file (`Ctrl+End`) and add this line:
 
 ```
-host    replication     replicator      172.16.93.133/32        md5
+host    replication     replicator      172.16.93.133/32        scram-sha-256
 ```
 
 > Each field explained:
@@ -339,7 +341,7 @@ host    replication     replicator      172.16.93.133/32        md5
 > | Database | `replication` | Special keyword for replication connections |
 > | User | `replicator` | Only this username is allowed |
 > | IP Address | `172.16.93.133/32` | Only from this exact Slave IP |
-> | Auth method | `md5` | Password-based authentication |
+> | Auth method | `scram-sha-256` | Password-based authentication (SCRAM; the default password hashing since PostgreSQL 14) |
 >
 > **Why `/32` and not `/24`?**
 > - `/24` means allow any IP in the range `172.16.93.0` to `172.16.93.255` (the entire subnet)
@@ -355,13 +357,14 @@ Save and exit: `Ctrl+X` → `Y` → `Enter`
 Allow incoming connections on PostgreSQL's default port:
 
 ```bash
-sudo ufw allow 5432/tcp
+sudo ufw allow from 172.16.93.133 to any port 5432 proto tcp
 sudo ufw reload
 ```
 
 > - **`ufw`** — Uncomplicated Firewall, Ubuntu's firewall manager
+> - **`from 172.16.93.133`** — only the Slave may reach the port (do not open 5432 to everyone)
 > - **`5432`** — the default port PostgreSQL listens on
-> - **`/tcp`** — TCP protocol (PostgreSQL uses TCP)
+> - **`proto tcp`** — TCP protocol (PostgreSQL uses TCP)
 > - **`reload`** — applies the new rule without restarting the firewall
 
 > If `ufw` is inactive/disabled, you can skip this step. Run `sudo ufw status` to check.
@@ -448,6 +451,7 @@ Expected: Status shows `down`.
 
 ```bash
 sudo -i -u postgres
+hostname   # confirm this is the Slave (VM2) before deleting anything
 rm -rf /var/lib/postgresql/16/main/*
 ```
 
@@ -518,6 +522,7 @@ primary_conninfo = 'user=replicator password=<REPLICATION_PASSWORD> host=172.16.
 ```
 
 > - **`standby.signal`** — empty file that tells PostgreSQL to run in read-only standby mode
+> - The replication password is stored in plain text in `postgresql.auto.conf` (readable only by the `postgres` OS user). For anything beyond a lab, keep it in a `.pgpass` file or use certificate authentication instead.
 > - **`primary_conninfo`** — connection string telling the Slave where the Master is
 
 ```bash
@@ -657,7 +662,7 @@ Expected output:
   3 | Charlie | Finance
 ```
 
-> **The data written on Master is readable on Slave!** ✅ WAL streaming replication is confirmed working.
+> **The data written on Master is readable on Slave!** ✅ WAL streaming replication is confirmed working. (Reads on a standby rely on `hot_standby = on`, which is the default since PostgreSQL 10.)
 
 ---
 
@@ -736,8 +741,8 @@ sequenceDiagram
     W->>W: Flush WAL to disk
     W-->>S: Stream WAL record in real time
     S->>S: WAL Receiver gets the record
-    S->>S: WAL Replayed — same INSERT runs on Slave
-    Note over S: Slave data is now identical to Master
+    S->>S: WAL record replayed — the physical change is applied (the SQL is not re-run)
+    Note over S: Slave data now reflects the change
 
     C->>S: SELECT * FROM employees
     S-->>C: Returns all rows including David ✅
@@ -761,7 +766,7 @@ sudo tail -30 /var/log/postgresql/postgresql-16-main.log
 | Problem | Fix |
 |---------|-----|
 | Wrong Master IP in backup | Re-run `pg_basebackup` with correct IP |
-| Firewall blocking port 5432 | Run `sudo ufw allow 5432/tcp` on Master |
+| Firewall blocking port 5432 | Run `sudo ufw allow from 172.16.93.133 to any port 5432 proto tcp` on Master |
 | Wrong IP in `pg_hba.conf` | Edit `pg_hba.conf` on Master with correct Slave IP |
 | Password wrong | Check `postgresql.auto.conf` on Slave for correct password |
 
@@ -790,7 +795,7 @@ sudo systemctl restart postgresql
 1. Confirm `listen_addresses = '*'` in Master's `postgresql.conf`
 2. Confirm Slave IP is in Master's `pg_hba.conf`
 3. Confirm PostgreSQL was restarted after config changes
-4. Confirm port is open: `sudo ufw allow 5432/tcp`
+4. Confirm port is open to the Slave: `sudo ufw allow from 172.16.93.133 to any port 5432 proto tcp` (on the Master)
 
 Test connectivity from Slave to Master:
 

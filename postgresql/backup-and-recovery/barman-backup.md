@@ -188,8 +188,8 @@ EOF
 ```bash
 # On pnode2
 sudo -u postgres bash -c "cat >> /data/patroni/pg_hba.conf << 'EOF'
-host all barman 172.16.93.143/32 md5
-host replication streaming_barman 172.16.93.143/32 md5
+host all barman 172.16.93.143/32 scram-sha-256
+host replication streaming_barman 172.16.93.143/32 scram-sha-256
 EOF"
 ```
 
@@ -205,14 +205,14 @@ EOF"
 
 **The two lines added:**
 
-`host all barman 172.16.93.143/32 md5`
+`host all barman 172.16.93.143/32 scram-sha-256`
 - `host` → TCP/IP connection (not unix socket)
 - `all` → any database
 - `barman` → only this user
 - `172.16.93.143/32` → only from this exact IP (`/32` = single host, not a range)
-- `md5` → password authentication
+- `scram-sha-256` → password authentication (SCRAM; the default for passwords created on PostgreSQL 14+)
 
-`host replication streaming_barman 172.16.93.143/32 md5`
+`host replication streaming_barman 172.16.93.143/32 scram-sha-256`
 - `replication` → special keyword, not a database name. Allows replication connections only — used for WAL streaming.
 - `streaming_barman` → only this user can use replication connections from this IP
 
@@ -426,10 +426,10 @@ sudo -u barman barman recover \
 **What Barman does during recover:**
 1. Copies base backup files to pnode2 via rsync over SSH
 2. Copies required WAL segments from `/var/lib/barman/pnode2/wals/`
-3. Writes `postgresql.conf` recovery settings (`restore_command`, `recovery_target_time`)
+3. Writes the recovery settings (`restore_command`, `recovery_target_time`) into the recovered cluster's configuration (the exact file depends on the Barman and PostgreSQL version)
 4. Creates `recovery.signal` on pnode2
 
-> **Note:** Barman overrides some existing `postgresql.conf` settings during recover — it sets `archive_command = false` and clears previous recovery targets to prevent conflicts.
+> **Note:** Barman overrides some existing settings during recover — it sets `archive_command = false` and clears previous recovery targets to prevent conflicts.
 
 ### Step 20 — Start PostgreSQL and complete recovery
 

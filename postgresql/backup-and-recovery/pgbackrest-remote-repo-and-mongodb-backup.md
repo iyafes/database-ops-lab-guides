@@ -251,7 +251,7 @@ sudo -u postgres psql -c "SELECT pg_reload_conf();"
 sudo -u postgres psql -c "SHOW archive_command;"
 ```
 
-> **Why?** The default `archive_command` used `cp` to copy WAL files locally. pgBackRest needs to receive WAL segments itself to maintain a consistent archive on the backup server. Without this, `pgbackrest check` will fail with error [068].
+> **Why?** The default `archive_command` used `cp` to copy WAL files locally. pgBackRest needs to receive WAL segments itself to maintain a consistent archive on the backup server. Without this, `pgbackrest check` will fail because `archive_command` does not call pgBackRest.
 
 ---
 
@@ -467,6 +467,8 @@ sudo chmod +x /usr/local/bin/mongodb-backup.sh
 sudo chown mongod:mongod /usr/local/bin/mongodb-backup.sh
 ```
 
+> **Staging note:** `mongodump` writes to `/var/lib/mongo/backup` on the same disk as the data, so make sure there is enough free space for a full dump, and monitor the log file and the free space because nothing here alerts on a failed run.
+>
 > **Credentials note:** Use a dedicated MongoDB backup user with only the privileges `mongodump` needs, and keep its password only in the restricted config file. If the credentials change, update that file (not the script).
 
 ---
@@ -517,7 +519,7 @@ sudo -u mongod crontab -l
 
 ## Part 3 — pg_hba.conf — Backup Server Access
 
-Add backup server IP to allow pgBackRest replication connections. On **DB server** (`192.168.50.10`):
+Optionally allow the backup server to connect to PostgreSQL directly (for example to run `psql` checks from it). pgBackRest itself normally reaches PostgreSQL by SSH to the DB host and connects locally, so this entry is not required for backups. This is a regular `all` entry, not a replication entry. On **DB server** (`192.168.50.10`):
 
 ```bash
 sudo tee -a /data/pgsql/17/data/pg_hba.conf << 'EOF'
@@ -570,7 +572,7 @@ sudo systemctl status mongod
 | pgBackRest stanza-create fails | `requires option: pg1-path` | Config file missing — create `/etc/pgbackrest/pgbackrest.conf` |
 | SSH permission denied | `Authentication failed (publickey)` | Check SELinux context with `ausearch -m avc -ts recent \| grep ssh` |
 | postgres .ssh wrong context | `avc: denied { read } for authorized_keys` | `semanage fcontext -a -t ssh_home_t "/var/lib/pgsql/.ssh(/.*)?"; restorecon -Rv` |
-| pgBackRest check fails | Error [068] archive_command must contain pgbackrest | Run `ALTER SYSTEM SET archive_command = 'pgbackrest --stanza=db1 archive-push %p'` |
+| pgBackRest check fails | `archive_command` does not contain `pgbackrest` | Run `ALTER SYSTEM SET archive_command = 'pgbackrest --stanza=db1 archive-push %p'` |
 | MongoDB SSH key not found | `identity file /var/lib/mongo/.ssh/... type -1` | Key is in `/home/mongod/.ssh/` — move to `/var/lib/mongo/.ssh/` |
 | mongod user home directory | Keys not found | mongod's home is `/var/lib/mongo/`, not `/home/mongod/` |
 | pgbackrest user missing | `chown: invalid user: pgbackrest:pgbackrest` | `useradd --system --no-create-home --shell /bin/bash pgbackrest` |

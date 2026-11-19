@@ -6,7 +6,7 @@
 set -uo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-/backup/mariadb}"
-MAX_AGE_MIN="${MAX_AGE_MIN:-960}"     # 16 h: covers a 12 h schedule plus slack
+MAX_AGE_MIN="${MAX_AGE_MIN:-960}"     # 16 h: longest gap in the 06:00/15:00 schedule is 15 h, plus 1 h slack
 MIN_BYTES="${MIN_BYTES:-10240}"
 
 problems=()

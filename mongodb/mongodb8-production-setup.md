@@ -20,9 +20,9 @@ mongod.conf configure
      ↓
 Service start
      ↓
-Create admin user  ←── before enabling authorization
+Create admin user  ←── via the localhost exception
      ↓
-Authorization enable + restart
+Verify authorization (restart)
      ↓
 Replica set initiate
      ↓
@@ -140,8 +140,6 @@ vi /etc/mongod.conf
 # ─── Storage ───────────────────────────────────────────────────
 storage:
   dbPath: /var/lib/mongo
-  journal:
-    enabled: true
 
 # ─── System Log ────────────────────────────────────────────────
 systemLog:
@@ -176,13 +174,11 @@ replication:
 ```yaml
 storage:
   dbPath: /var/lib/mongo
-  journal:
-    enabled: true
 ```
 
 `dbPath`: MongoDB's actual data files (BSON format) live here. Make sure this folder has enough space.
 
-`journal: enabled: true`: the journal means every write operation is first written to a "log" and only then to the actual data file. If the server crashes suddenly, data can be recovered from the journal. In production this must always be `true`.
+Journaling: every write operation is first written to a "log" (the journal) and only then to the actual data file, so after a sudden crash data can be recovered from the journal. On MongoDB 8.0 the journal is always on; the old `storage.journal.enabled` option was removed in 6.1, and putting it in `mongod.conf` can stop mongod from starting.
 
 ---
 
@@ -238,9 +234,9 @@ security:
 
 This is MongoDB's most important security setting. By default, MongoDB lets anyone connect **without any password**. With `authorization: enabled`, nobody can get in without a valid username and password.
 
-> **⚠️ Critical order:** keep this setting in the config from the start, but **do not restart the service before the admin user is created**. Otherwise you will be locked out.
+> **Note on order:** with `authorization: enabled` and no users yet, MongoDB's localhost exception lets you create the first (admin) user from a shell on the server itself. Until that user exists, remote clients can do nothing useful.
 >
-> This guide follows the correct order: the restart happens after the admin user is created.
+> This guide creates the admin user right after the first start, then verifies that authentication is required.
 
 ---
 
@@ -263,7 +259,7 @@ replication:
 ```
 
 Why this is needed even on a single server:
-- **The oplog is enabled.** The oplog is an ordered log of all write operations. It is needed for consistent backups.
+- **The oplog is enabled.** The oplog is an ordered log of all write operations. It is what makes `mongodump --oplog` (a consistent point-in-time dump) possible.
 - **Later**, if you add another server to build a real replica set, you can do it without migrating the data.
 
 The name `"rs0"` is a convention. You can change it, but the same name must match when you initiate later.
@@ -313,9 +309,9 @@ Common causes: wrong yaml formatting in `mongod.conf`, or a wrong IP in `bindIp`
 
 ### What is happening here?
 
-Right now `authorization: enabled` is in the config but the service is not running with it yet (it has not been restarted). So you can still connect with mongosh without a password. Use this opportunity to create the admin user.
+The service was started in Step 4 with `authorization: enabled` already in the config, but no user exists yet. In this state the localhost exception applies: from a shell on the server itself you may create the first user (in the `admin` database), and nothing else is allowed. Use this to create the admin user.
 
-Once the admin user exists, we will restart the service, and authorization becomes fully active.
+Once the admin user exists, the exception no longer applies and every connection must authenticate.
 
 ### Enter the shell
 
@@ -363,7 +359,7 @@ exit
 
 ## Step 6 — Restart to Activate Authorization
 
-`authorization: enabled` is already in the config. Restarting now makes it take effect.
+Authorization has been active since Step 4. Restarting here is not strictly required, but it confirms the setting survives a restart.
 
 ```bash
 systemctl restart mongod
@@ -543,7 +539,7 @@ If it connects, it worked. Trying to enter another database with this user shoul
 
 ### What is happening here?
 
-`mongodump` is MongoDB's official backup tool. It exports all data in BSON format, which can later be restored into any MongoDB with `mongorestore`.
+`mongodump` is MongoDB's official backup tool. It exports all data in BSON format, which can later be restored into a MongoDB server with `mongorestore` (restoring into an older major version is not guaranteed to work).
 
 ### Manual backup (can be run at any time)
 
@@ -585,7 +581,7 @@ echo "$(date): Backup completed — $BACKUP_DIR/backup_$DATE" >> /var/log/mongo_
 EOF
 ```
 
-> **⚠️ Replace `<password>` in the script.** Put the admin's actual password.
+> **⚠️ Replace `<password>` in the script.** Put the admin's actual password. Note that a password given with `-p` is visible in the process list while `mongodump` runs; a `--config` file with mode 600 avoids that.
 
 Make the script executable:
 
@@ -789,7 +785,7 @@ These cannot be provided in this guide; they depend on your specific environment
 ---
 
 # Part B — Migration (MongoDB)
-**Combined Server (Docker) → New DB Server (Binary)**
+**Old Docker Server (Docker) → New DB Server (Binary)**
 
 ---
 
@@ -800,7 +796,7 @@ MongoDB migration does not have PostgreSQL's version-downgrade problem: `mongodu
 The method here is:
 
 ```
-mongodump (export BSON from the Combined Server's Docker container)
+mongodump (export BSON from the Old Docker Server's Docker container)
        ↓
 transfer to new server
        ↓
@@ -808,9 +804,9 @@ mongorestore (restore on the New DB Server)
 ```
 
 With this method:
-- ✅ No data loss
+- ✅ No data loss, as long as the app stays stopped between the final dump and the cutover
 - ✅ Downtime controlled
-- ✅ Rollback is easy: the combined server's MongoDB container is never stopped
+- ✅ Rollback is easy: the old Docker server's MongoDB container is never stopped
 - ✅ Version flexibility
 
 ---
@@ -820,7 +816,7 @@ With this method:
 ### 1. Check the data size on the source
 
 ```bash
-# On the combined server
+# On the old Docker server
 docker exec <mongo-container-name> mongosh \
   -u admin -p <password> \
   --authenticationDatabase admin \
@@ -841,10 +837,10 @@ Keep at least 2 times the total size of the source databases as free space.
 ### 3. Test connectivity
 
 ```bash
-# From the new DB server to the combined server
+# From the new DB server to the old Docker server
 ping <combined-server-ip>
 
-# SSH test from the combined server to the new server
+# SSH test from the old Docker server to the new server
 ssh user@<new-db-server-ip> "echo 'ok'"
 ```
 
@@ -855,7 +851,7 @@ ssh user@<new-db-server-ip> "echo 'ok'"
 ### Overview: what you do on which server
 
 ```
-Combined Server                    New DB Server
+Old Docker Server                    New DB Server
 (running)                          (ready, but empty)
     │                                    │
     │── pre-check ──────────────────────▶│
@@ -882,7 +878,7 @@ Combined Server                    New DB Server
 Take a test dump without stopping the app. Measure how long it takes.
 
 ```bash
-# On the combined server
+# On the old Docker server
 time docker exec <mongo-container-name> mongodump \
   --authenticationDatabase admin \
   -u admin \
@@ -923,7 +919,7 @@ mongorestore \
 **Tell the application team.**
 
 ```bash
-# On the combined server: stop only the app containers
+# On the old Docker server: stop only the app containers
 docker stop <frontend-container-name> <backend-container-name>
 
 # Confirm
@@ -940,7 +936,7 @@ Do not stop the MongoDB container; it is needed for rollback.
 The app is stopped and no new writes are coming in. Take the final dump now.
 
 ```bash
-# On the combined server
+# On the old Docker server
 
 # Dump inside the container
 docker exec <mongo-container-name> mongodump \
@@ -968,7 +964,7 @@ ls -lh /tmp/$DUMP_NAME
 ### Migration Step 4: Transfer the Dump
 
 ```bash
-# From the combined server to the new DB server
+# From the old Docker server to the new DB server
 scp -r /tmp/$DUMP_NAME user@<new-db-server-ip>:/tmp/
 
 # Verify the transfer
@@ -1026,7 +1022,7 @@ db.<collection_name>.countDocuments()
 exit
 ```
 
-**Run the same counts on the combined server:**
+**Run the same counts on the old Docker server:**
 
 ```bash
 docker exec <mongo-container-name> mongosh \
@@ -1037,7 +1033,7 @@ docker exec <mongo-container-name> mongosh \
 
 If the counts match, the migration succeeded.
 
-> **⚠️ If the counts differ:** roll back: bring the app containers up on the combined server again, and investigate.
+> **⚠️ If the counts differ:** roll back: bring the app containers up on the old Docker server again, and investigate.
 
 ---
 
@@ -1061,18 +1057,18 @@ If everything is fine, **the downtime is over.**
 If there is a problem at any step:
 
 ```bash
-# On the combined server: bring the app up again
+# On the old Docker server: bring the app up again
 docker start <frontend-container-name> <backend-container-name>
 ```
 
-The combined server's MongoDB container was never stopped. The data is intact there.
+The old Docker server's MongoDB container was never stopped. The data is intact there.
 
 ---
 
 ## Things to Know Before Migrating
 
-- [ ] **The name of the MongoDB container on the combined server**: `docker ps`
-- [ ] **The MongoDB admin password on the combined server**
+- [ ] **The name of the MongoDB container on the old Docker server**: `docker ps`
+- [ ] **The MongoDB admin password on the old Docker server**
 - [ ] **The backend server's IP**: from the DevOps team
 - [ ] **Which databases need to be migrated**: the backend team will confirm
 - [ ] **When the downtime window is**: agree it with the application team

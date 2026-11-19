@@ -110,7 +110,7 @@ sudo mkdir -p {LOG_DIR}
 sudo chown -R postgres:postgres {LOG_DIR}
 sudo chmod 700 {LOG_DIR}
 
-# WAL archive directory — archived WAL segments for backup/recovery
+# WAL archive directory — archived WAL segments (a local copy; copy them off this host for real backups)
 sudo mkdir -p {ARCHIVE_DIR}
 sudo chown -R postgres:postgres {ARCHIVE_DIR}
 sudo chmod 700 {ARCHIVE_DIR}
@@ -132,7 +132,7 @@ SELinux on Rocky Linux 9 runs in Enforcing mode. Custom mount points (especially
 
 **Why two steps?** The parent directories (`/data`, `/log`) must first be given a generic valid type (`var_t`, `var_log_t`). Without this, `restorecon` on child paths may not propagate correctly. Then PostgreSQL-specific types are applied to the actual subdirectories.
 
-**Why both `semanage` and `chcon`?** `chcon` applies the label immediately (takes effect right now). `semanage fcontext` makes it persistent across reboots. Both are needed.
+**Why `semanage` and `restorecon`?** `semanage fcontext` records the labeling rule persistently (it survives relabels and reboots). `restorecon` then applies the recorded rule to the files right now. (`chcon` also labels immediately but is not recorded as a rule, so it is not needed here.)
 
 ```bash
 # Step 1: Fix parent directory contexts
@@ -147,9 +147,9 @@ sudo semanage fcontext -a -t postgresql_db_t "/data/pgsql(/.*)?"
 sudo semanage fcontext -a -t postgresql_log_t "{LOG_DIR}(/.*)?"
 sudo semanage fcontext -a -t postgresql_log_t "{ARCHIVE_DIR}(/.*)?"
 
-sudo chcon -Rv -t postgresql_db_t /data/pgsql
-sudo chcon -Rv -t postgresql_log_t {LOG_DIR}
-sudo chcon -Rv -t postgresql_log_t {ARCHIVE_DIR}
+sudo restorecon -Rv /data/pgsql
+sudo restorecon -Rv {LOG_DIR}
+sudo restorecon -Rv {ARCHIVE_DIR}
 ```
 
 Verify (requires `sudo` because directories are `700` and owned by `postgres`):
@@ -195,17 +195,20 @@ sudo ls -la {DATA_DIR}
 
 ## Phase 6 — Update systemd Service File
 
-The default systemd service file points to a different `PGDATA` path. Update it to point to your custom data directory.
+The default systemd service file points to a different `PGDATA` path. Override it with a drop-in file instead of editing the packaged unit under `/usr/lib/systemd/` (package updates would overwrite that edit).
 
 ```bash
-sudo sed -i 's|Environment=PGDATA=.*|Environment=PGDATA={DATA_DIR}/|' \
-  /usr/lib/systemd/system/postgresql-{PG_VERSION}.service
-
-# Verify the change
-grep PGDATA /usr/lib/systemd/system/postgresql-{PG_VERSION}.service
-# Expected: Environment=PGDATA={DATA_DIR}/
+sudo mkdir -p /etc/systemd/system/postgresql-{PG_VERSION}.service.d
+sudo tee /etc/systemd/system/postgresql-{PG_VERSION}.service.d/override.conf << 'EOF'
+[Service]
+Environment=PGDATA={DATA_DIR}/
+EOF
 
 sudo systemctl daemon-reload
+
+# Verify the change
+systemctl show postgresql-{PG_VERSION} -p Environment
+# Expected: Environment=PGDATA={DATA_DIR}/
 ```
 
 ---
@@ -216,7 +219,7 @@ sudo systemctl daemon-reload
 
 > **Important:** Never use `trust` authentication in production. `trust` allows passwordless connections and is a critical security risk.
 
-> **Authentication method:** Use `scram-sha-256` — it is the most secure password authentication method available in PostgreSQL. Never use `md5` in new setups.
+> **Authentication method:** Use `scram-sha-256` — it is the recommended password authentication method in PostgreSQL. Do not use `md5` in new setups.
 
 ```bash
 sudo tee {DATA_DIR}/pg_hba.conf << 'EOF'
@@ -318,7 +321,7 @@ wal_level = replica
 fsync = on
 synchronous_commit = local
 full_page_writes = on
-wal_compression = zstd
+wal_compression = zstd   # zstd needs PostgreSQL 15+ and a build with zstd support; use lz4 or pglz otherwise
 checkpoint_timeout = 10min
 checkpoint_completion_target = 0.9
 checkpoint_flush_after = 256kB
@@ -383,7 +386,7 @@ log_timezone = 'UTC'
 #------------------------------------------------------------------------------
 autovacuum = on
 autovacuum_max_workers = {AUTOVACUUM_MAX_WORKERS}
-autovacuum_naptime = 5min
+autovacuum_naptime = 1min
 autovacuum_vacuum_threshold = 500
 autovacuum_vacuum_insert_threshold = 1000
 autovacuum_analyze_threshold = 500
@@ -403,7 +406,7 @@ bgwriter_lru_multiplier = 2.0
 # CLIENT DEFAULTS
 #------------------------------------------------------------------------------
 statement_timeout = 0
-lock_timeout = 5min
+lock_timeout = 0
 idle_in_transaction_session_timeout = 5min
 idle_session_timeout = 10min
 vacuum_freeze_table_age = 150000000
@@ -437,14 +440,14 @@ EOF
 | Parameter | Rule | Reason |
 |-----------|------|--------|
 | `shared_buffers` | 25% of total RAM | PostgreSQL's main memory cache. The single most impactful memory parameter. |
-| `effective_cache_size` | 50% of total RAM | Tells the query planner how much memory is available for caching (including OS cache). Does not allocate memory — only affects planning decisions. |
+| `effective_cache_size` | 50-75% of total RAM (50% used here) | Tells the query planner how much memory is available for caching (including OS cache). Does not allocate memory — only affects planning decisions. |
 | `work_mem` | See table below | Memory per sort/hash operation per query. With many concurrent connections, setting this too high causes OOM. Formula: `(RAM - shared_buffers) / (max_connections * 2)`. |
 | `maintenance_work_mem` | 3–6% of RAM | Used by VACUUM, CREATE INDEX, ALTER TABLE. Higher = faster index builds. |
-| `max_worker_processes` | = CPU core count | Background worker ceiling. Do not exceed core count. |
+| `max_worker_processes` | = CPU core count | Background worker ceiling (parallel workers and other background workers draw from it). Typically set to the core count. |
 | `max_parallel_workers_per_gather` | CPU cores / 2 | Parallel query workers per query. Leave at least half the cores for other queries. On 2-core servers, set to 1. |
 | `max_wal_size` | 20% of data disk | Maximum WAL accumulation before a forced checkpoint. Too small = frequent checkpoints. Too large = long crash recovery. |
 | `random_page_cost` | `1.1` for NVMe, `4.0` for HDD | Tells the planner how expensive random reads are relative to sequential. NVMe has nearly equal random/sequential speed, so set close to `seq_page_cost`. |
-| `wal_compression` | `zstd` (PG 14+) | Compresses WAL segments. Reduces I/O on the WAL path. `zstd` is faster and compresses better than `pglz`. |
+| `wal_compression` | `zstd` (PG 15+) | Compresses full-page images in WAL. Reduces WAL volume and I/O. `lz4` and `zstd` were added in PG 15 (older versions only have `pglz`); both are usually cheaper on CPU than `pglz`. |
 | `log_duration` | `off` | Logs the duration of every completed statement. On busy servers this floods the log directory quickly. Use `log_min_duration_statement` instead (logs only slow queries). |
 | `log_hostname` | `off` | DNS reverse lookup on every connection. Slow and unnecessary when IPs are already logged. |
 | `log_statement` | `ddl` | Logs CREATE, ALTER, DROP statements. `all` would log every SELECT — avoid in production unless debugging. |
@@ -555,7 +558,7 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 - [ ] Custom data, log, archive directories created with correct ownership (`postgres:postgres`, `700`)
 - [ ] SELinux contexts applied — `postgresql_db_t` and `postgresql_log_t` confirmed
 - [ ] `initdb` completed successfully
-- [ ] systemd service file updated with correct `PGDATA`
+- [ ] systemd drop-in override created with correct `PGDATA`
 - [ ] `postgresql.conf` applied with tuned parameters
 - [ ] `pg_hba.conf` configured — no `trust` entries, VPN IP and app server IP included
 - [ ] `postgres` superuser password set
@@ -599,16 +602,7 @@ Use this table to pick the right values for `postgresql.conf` based on your serv
 
 **`max_wal_size`** should be sized against your data disk. As a rule, keep WAL under 20–25% of the data disk size. On small disks (20GB), `2–4GB` is the safe range.
 
-**`shared_buffers` above 8GB** may require increasing the OS shared memory limit. Check with:
-```bash
-sysctl kernel.shmmax
-sysctl kernel.shmall
-```
-If `shared_buffers` exceeds `kernel.shmmax`, PostgreSQL will fail to start. Add to `/etc/sysctl.conf`:
-```bash
-kernel.shmmax = 17179869184   # example for 16GB
-kernel.shmall = 4194304
-```
+**`shared_buffers` and kernel shared memory limits:** since PostgreSQL 9.3 the main shared memory area is allocated with `mmap`, so `kernel.shmmax` and `kernel.shmall` do not limit `shared_buffers` and normally need no tuning.
 
 **`huge_pages = try`** means PostgreSQL will use huge pages if the OS has them configured, and silently fall back if not. For servers with `shared_buffers` above 4GB, configure huge pages at the OS level for better performance.
 

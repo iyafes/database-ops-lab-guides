@@ -24,7 +24,7 @@ Senior DBAs use pgBadger to find performance bottlenecks, identify problematic q
 | Hostname | IP | Role |
 |----------|----|------|
 | pnode1 | 172.16.93.136 | Primary (Leader) — pgBadger installed here |
-| pnode4 | 172.16.93.137 | Replica |
+| pnode4 | 172.16.93.142 | Replica |
 | pnode5 | 172.16.93.144 | Replica |
 
 **Key paths:**
@@ -196,7 +196,7 @@ pgBadger parses each log line's prefix to extract user, database, application, a
 
 | Code | Meaning |
 |------|---------|
-| `%t` | Timestamp with milliseconds |
+| `%t` | Timestamp (without milliseconds; `%m` adds milliseconds) |
 | `%p` | Process ID |
 | `%l` | Log line number per session |
 | `%u` | Username |
@@ -213,7 +213,7 @@ Without `%a` and `%h`, pgBadger cannot produce application-level or client-level
 
 ### pgaudit Interaction
 
-This cluster has `pgaudit` enabled with `pgaudit.log: ddl,write,role`. pgaudit logs every matching query with an `AUDIT:` prefix. When `log_min_duration_statement: 0` is also set, every single query appears in the log twice — once from pgaudit and once from the duration logging. This creates a very large log file in a short time.
+This cluster has `pgaudit` enabled with `pgaudit.log: ddl,write,role`. pgaudit logs every matching query with an `AUDIT:` prefix. When `log_min_duration_statement: 0` is also set, every statement that pgaudit audits (here DDL, writes and role changes) appears in the log twice — once from pgaudit and once from the duration logging. This creates a very large log file in a short time.
 
 For practice this is fine. In production, balance between `pgaudit` verbosity and `log_min_duration_statement` threshold carefully.
 
@@ -624,7 +624,7 @@ All PostgreSQL log entries at level WARNING, ERROR, FATAL, or PANIC, grouped by 
 | `checkpoint request` | WAL pressure causing forced checkpoints |
 | `AUDIT:` prefixed lines | pgaudit entries — DDL/DML audit trail |
 
-**In your setup:** pgaudit is active, so you will see many `AUDIT:` entries in the errors/events section. pgBadger does not have a dedicated pgaudit section — audit entries appear mixed in with other log events.
+**In your setup:** pgaudit is active, so many `AUDIT:` lines are present in the log being analyzed.
 
 ---
 
@@ -651,4 +651,4 @@ All PostgreSQL log entries at level WARNING, ERROR, FATAL, or PANIC, grouped by 
 - `log_min_duration_statement: 0` logs everything — useful for practice and debugging, but generates very large log files. Use a threshold (e.g., `1000` for 1 second) in production.
 - The `--prefix` flag in the pgBadger command must exactly match your `log_line_prefix` setting. A mismatch causes pgBadger to fail to parse most log lines, resulting in near-zero query counts.
 - `log_filename = postgresql-%a.log` (weekday rotation) mixes multiple weeks' data. For production use `postgresql-%Y-%m-%d.log` for clean daily files.
-- pgaudit and `log_min_duration_statement: 0` together produce very high log volume. Each audited query appears twice in the log.
+- pgaudit and `log_min_duration_statement: 0` together produce very high log volume. Each audited statement appears twice in the log.

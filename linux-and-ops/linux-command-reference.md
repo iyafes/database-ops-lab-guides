@@ -249,7 +249,7 @@ echo $VAR                  # Display value of VAR variable
 
 ## User Management
 
-**sudo user** - WRONG command
+**sudo -i** - Open a root login shell
 ```bash
 sudo -i                    # sudo -i (login as root)
 ```
@@ -273,7 +273,7 @@ unalias ll                 # Remove the 'll' alias
 
 ## System Control
 
-**init** - Change system runlevel
+**init** - Change system runlevel (legacy SysV; on systemd systems prefer `sudo systemctl poweroff` / `sudo systemctl reboot`)
 ```bash
 init 0                     # Shutdown system (runlevel 0)
                            # Needs sudo: sudo init 0

@@ -171,13 +171,13 @@ The data directory lives here on Ubuntu:
 ├── base/             ← actual database files
 ├── global/           ← cluster-wide data (roles, users)
 ├── pg_wal/           ← Write-Ahead Log files
-├── postgresql.conf   ← main configuration file
-├── pg_hba.conf       ← authentication/access rules
 ├── PG_VERSION        ← version number
 └── postmaster.pid    ← running process ID
 ```
 
 > **One Cluster = One Data Directory = One PostgreSQL Instance**
+>
+> On Ubuntu, `postgresql.conf` and `pg_hba.conf` live outside the data directory, in `/etc/postgresql/16/main/`.
 
 ---
 
@@ -310,7 +310,7 @@ sudo nano /etc/postgresql/16/main/pg_hba.conf
 Add at the very bottom:
 
 ```
-host    replication     replicator      172.16.93.133/32        md5
+host    replication     replicator      172.16.93.133/32        scram-sha-256
 ```
 
 > | Field | Value | Meaning |
@@ -319,7 +319,7 @@ host    replication     replicator      172.16.93.133/32        md5
 > | `replication` | — | for replication connections only |
 > | `replicator` | — | only this username |
 > | `172.16.93.133/32` | — | only from this exact Slave IP |
-> | `md5` | — | password-based authentication |
+> | `scram-sha-256` | — | password-based authentication (SCRAM) |
 >
 > `/32` means only this single exact IP. `/24` would allow the entire subnet — less secure.
 
@@ -330,11 +330,12 @@ Save and exit.
 ### Step 4 — Open Firewall Port
 
 ```bash
-sudo ufw allow 5432/tcp
+sudo ufw allow from 172.16.93.133 to any port 5432 proto tcp   # Slave (VM2)
+sudo ufw allow from 172.16.93.134 to any port 5432 proto tcp   # PgPool (VM3), used in Part 2
 sudo ufw reload
 ```
 
-> Opens port 5432 (PostgreSQL's default port) so the Slave can connect. Skip if `ufw` is inactive (`sudo ufw status` to check).
+> Opens port 5432 (PostgreSQL's default port) to the Slave (VM2) and to PgPool (VM3, used in Part 2) only. Skip if `ufw` is inactive (`sudo ufw status` to check).
 
 ---
 
@@ -647,7 +648,7 @@ PgPool's main jobs:
 |---------|-------------|
 | **Query Routing** | Sends WRITE queries to Master, READ queries to Master or Slave |
 | **Load Balancing** | Distributes SELECT queries between Master and Slave based on weight |
-| **Connection Pooling** | Reuses existing connections so thousands of clients can connect efficiently |
+| **Connection Pooling** | Keeps backend connections open and reuses them across client sessions (concurrent clients are bounded by `num_init_children`) |
 | **Health Check** | Monitors Master and Slave every few seconds to detect failures |
 
 ---
@@ -670,7 +671,7 @@ Note the `ens33` inet IP as VM3's IP.
 
 ### Step 19 — Install PostgreSQL Client Tools on VM3
 
-VM3 does **not** need a full PostgreSQL server — only client tools for PgPool's internal use.
+VM3 does **not** need a full PostgreSQL server — only client tools (such as `psql`) for testing connectivity from VM3.
 
 ```bash
 sudo apt update
@@ -678,7 +679,7 @@ sudo apt install postgresql-client -y
 psql --version
 ```
 
-> **`postgresql-client`** — installs `psql` and `pg_isready` tools only. PgPool uses these for health checking and replication status checks.
+> **`postgresql-client`** — installs `psql` and `pg_isready` tools only. They are used in this guide to test connectivity from VM3; PgPool itself talks to the backends through its own libpq-based code.
 
 ---
 
@@ -749,11 +750,13 @@ host    all    all         172.16.93.134/32    md5
 
 ### Step 24 — Change Password Encryption to md5 on Master
 
-By default, newer PostgreSQL uses `scram-sha-256`. PgPool's password file uses `md5`. They must match, otherwise you get:
+By default, newer PostgreSQL uses `scram-sha-256`. This lab switches to `md5` so that the `pool_passwd` entries created with `pg_md5` below match the backend password format; otherwise you get:
 
 ```
 ERROR: failed to authenticate with backend using SCRAM
 ```
+
+> **Lab shortcut:** `md5` is the older, weaker password method (deprecated since PostgreSQL 18). Pgpool-II 4.x can also authenticate against `scram-sha-256` backends (the extended guide uses `pg_enc` with an AES-encrypted `pool_passwd`), which is the better choice outside a lab.
 
 ```bash
 sudo nano /etc/postgresql/16/main/postgresql.conf
@@ -957,6 +960,8 @@ child_life_time = 300
 connection_life_time = 600
 ```
 
+> Pgpool can open up to `num_init_children × max_pool` connections to each backend (here 32 × 4 = 128). This must stay within each backend's `max_connections` minus `superuser_reserved_connections` (PostgreSQL default 100, so this lab setting can exceed it under load); lower `max_pool` or raise the backend `max_connections` accordingly.
+
 **Health check:**
 
 ```
@@ -1001,10 +1006,10 @@ sudo nano /etc/pgpool2/pool_hba.conf
 Add at the bottom:
 
 ```
-host    all    all    0.0.0.0/0    md5
+host    all    all    172.16.93.0/24    md5
 ```
 
-> PgPool's own authentication file — controls who can connect INTO PgPool. This allows any client from any IP using md5 password.
+> PgPool's own authentication file — controls who can connect INTO PgPool. This allows any client in the lab subnet using an md5 password (use a narrower range for real clients).
 
 Save and exit.
 
@@ -1166,7 +1171,7 @@ Expected:
  1       | 172.16.93.133  | standby | 2
 ```
 
-Slave received more queries because its weight is higher (2 vs 1) ✅
+Slave received more queries because its weight is higher (2 vs 1) ✅ (the choice is weighted-random per session, so with only 3 queries an exact 1:2 split is likely but not guaranteed)
 
 ---
 
@@ -1227,7 +1232,7 @@ Real-time WAL streaming replication confirmed end-to-end through PgPool ✅
 |---------|-----|
 | `pg_stat_replication` is empty | Check Slave logs: `sudo tail -30 /var/log/postgresql/postgresql-16-main.log` |
 | Wrong Master IP in backup | Re-run `pg_basebackup` with correct IP |
-| Firewall blocking port 5432 | `sudo ufw allow 5432/tcp` on Master |
+| Firewall blocking port 5432 | `sudo ufw allow from 172.16.93.133 to any port 5432 proto tcp` on Master |
 | Wrong IP in `pg_hba.conf` | Add correct Slave IP to Master's `pg_hba.conf` |
 | `pg_is_in_recovery()` returns `f` | `standby.signal` missing — `touch /var/lib/postgresql/16/main/standby.signal` |
 | `active (exited)` in systemctl | Normal on Ubuntu — check `sudo pg_lsclusters` instead |

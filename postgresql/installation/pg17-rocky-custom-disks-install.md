@@ -114,7 +114,7 @@ sudo mkdir -p /logs/postgresql
 sudo chown -R postgres:postgres /logs/postgresql
 sudo chmod 700 /logs/postgresql
 
-# WAL archive directory (required for backup)
+# WAL archive directory (local copy; archived WAL on the same host does not protect against losing the host)
 sudo mkdir -p /logs/archive
 sudo chown -R postgres:postgres /logs/archive
 sudo chmod 700 /logs/archive
@@ -151,12 +151,12 @@ sudo semanage fcontext -a -t postgresql_db_t "/data/pgsql(/.*)?"
 sudo semanage fcontext -a -t postgresql_log_t "/logs/postgresql(/.*)?"
 sudo semanage fcontext -a -t postgresql_log_t "/logs/archive(/.*)?"
 
-sudo chcon -Rv -t postgresql_db_t /data/pgsql
-sudo chcon -Rv -t postgresql_log_t /logs/postgresql
-sudo chcon -Rv -t postgresql_log_t /logs/archive
+sudo restorecon -Rv /data/pgsql
+sudo restorecon -Rv /logs/postgresql
+sudo restorecon -Rv /logs/archive
 ```
 
-> **Note:** `chcon` applies context immediately. The `semanage fcontext` entries make it persistent across reboots. Both are needed.
+> **Note:** `semanage fcontext` records the labeling rule persistently (it survives relabels and reboots). `restorecon` then applies the recorded rule to the files right now.
 
 Verify:
 ```bash
@@ -195,17 +195,20 @@ sudo ls -la /data/pgsql/17/data/
 
 ## Phase 6 — Configure systemd Service (Custom PGDATA)
 
-The default service file points to a different PGDATA. Update it to use the custom data directory.
+The default service file points to a different PGDATA. Override it with a drop-in file instead of editing the packaged unit under `/usr/lib/systemd/` (package updates would overwrite that edit).
 
 ```bash
-sudo sed -i 's|Environment=PGDATA=.*|Environment=PGDATA=/data/pgsql/17/data/|' \
-  /usr/lib/systemd/system/postgresql-17.service
-
-# Verify
-grep PGDATA /usr/lib/systemd/system/postgresql-17.service
-# Expected: Environment=PGDATA=/data/pgsql/17/data/
+sudo mkdir -p /etc/systemd/system/postgresql-17.service.d
+sudo tee /etc/systemd/system/postgresql-17.service.d/override.conf << 'EOF'
+[Service]
+Environment=PGDATA=/data/pgsql/17/data/
+EOF
 
 sudo systemctl daemon-reload
+
+# Verify
+systemctl show postgresql-17 -p Environment
+# Expected: Environment=PGDATA=/data/pgsql/17/data/
 ```
 
 ---
@@ -287,6 +290,7 @@ max_replication_slots = 10
 wal_keep_size = 512
 max_slot_wal_keep_size = 500
 wal_sender_timeout = 180s
+# hot_standby and the standby settings below only take effect when this server runs as a standby
 hot_standby = on
 max_standby_archive_delay = 600s
 max_standby_streaming_delay = 600s
@@ -320,9 +324,9 @@ log_min_duration_statement = 3000
 log_checkpoints = on
 log_connections = off
 log_disconnections = off
-log_duration = on
+log_duration = off
 log_error_verbosity = default
-log_hostname = on
+log_hostname = off
 log_line_prefix = '%m [%p]: [%l-1] db=%d,user=%u,app=%a,client=%h '
 log_lock_waits = on
 log_statement = 'ddl'
@@ -336,7 +340,7 @@ syslog_ident = 'postgres'
 #------------------------------------------------------------------------------
 autovacuum = on
 autovacuum_max_workers = 3
-autovacuum_naptime = 5min
+autovacuum_naptime = 1min
 autovacuum_vacuum_threshold = 500
 autovacuum_vacuum_insert_threshold = 1000
 autovacuum_analyze_threshold = 500
@@ -356,7 +360,7 @@ bgwriter_lru_multiplier = 7.0
 # CLIENT DEFAULTS
 #------------------------------------------------------------------------------
 statement_timeout = 0
-lock_timeout = 5min
+lock_timeout = 0
 idle_in_transaction_session_timeout = 5min
 idle_session_timeout = 10min
 vacuum_freeze_table_age = 150000000
@@ -389,17 +393,17 @@ EOF
 
 | Parameter | Value | Reason |
 |-----------|-------|--------|
-| `shared_buffers` | 2GB | 25% of 8GB RAM. Senior DBA config had 14GB (for 32GB server) — that would crash this server. |
-| `effective_cache_size` | 3GB | Tells planner how much OS cache is available. Set conservatively given MongoDB also runs here. |
+| `shared_buffers` | 2GB | 25% of 8GB RAM. |
+| `effective_cache_size` | 3GB | Tells planner how much OS cache is available. Set conservatively because other services share this server. |
 | `random_page_cost` | 1.1 | NVMe drives have nearly equal random/sequential speed. Default 4.0 is for HDD. Lower value tells planner to prefer index scans. |
-| `max_connections` | 1000 | Confirmed by senior DBA. |
+| `max_connections` | 1000 | Sized for this application's connection count. On 8GB RAM, a connection pooler (e.g. PgBouncer) in front of a much lower `max_connections` is the safer design. |
 | `max_prepared_transactions` | 0 | Disabled — not used in this application. |
-| `max_worker_processes` | 3 | Confirmed by senior DBA. Matches CPU count. |
-| `log_statement` | ddl | Logs only DDL (CREATE/ALTER/DROP). Senior DBA config had `all` which logs every SELECT — would fill disk quickly. |
+| `max_worker_processes` | 3 | Kept below the 4-core count and the default of 8, which also caps `max_parallel_workers`. |
+| `log_statement` | ddl | Logs only DDL (CREATE/ALTER/DROP). `all` would log every statement and fill the disk quickly. |
 | `archive_mode` | on | Required for WAL archiving and backup tools. |
 | `archive_command` | cp to /logs/archive | Local archive. Update this when backup server is configured with pgBackRest. |
 | `wal_level` | replica | Minimum level required for streaming replication and backup tools. |
-| `max_wal_size` | 8GB | Confirmed by senior DBA. Enough space on /data disk (47GB free). |
+| `max_wal_size` | 8GB | Fits on the 50GB /data disk with room to spare. |
 
 ---
 
@@ -452,7 +456,7 @@ EOF
 | `192.168.60.0/24 scram-sha-256` | DBA VPN subnet — pgAdmin access. VPN assigns IPs in this range. |
 | `192.168.50.30/32 scram-sha-256` | Application/backend server IP — allows backend to connect |
 
-> **Note on authentication method:** `scram-sha-256` is the most secure password authentication method available in PostgreSQL. Never use `md5` or `trust` in production.
+> **Note on authentication method:** `scram-sha-256` is the recommended password authentication method in PostgreSQL. Do not use `md5` or `trust` in production.
 
 > **Finding your VPN IP:** When you get a "no pg_hba.conf entry for host X.X.X.X" error in pgAdmin, X.X.X.X is your VPN IP. Add the corresponding subnet (e.g., `192.168.60.0/24`) to pg_hba.conf.
 
@@ -563,9 +567,9 @@ sudo restorecon -Rv /logs
 sudo semanage fcontext -a -t postgresql_db_t "/data/pgsql(/.*)?"
 sudo semanage fcontext -a -t postgresql_log_t "/logs/postgresql(/.*)?"
 sudo semanage fcontext -a -t postgresql_log_t "/logs/archive(/.*)?"
-sudo chcon -Rv -t postgresql_db_t /data/pgsql
-sudo chcon -Rv -t postgresql_log_t /logs/postgresql
-sudo chcon -Rv -t postgresql_log_t /logs/archive
+sudo restorecon -Rv /data/pgsql
+sudo restorecon -Rv /logs/postgresql
+sudo restorecon -Rv /logs/archive
 ```
 
 ### pgAdmin — "no pg_hba.conf entry for host X.X.X.X"
@@ -603,7 +607,7 @@ dnf makecache
 - [ ] PG 17 installed and version verified
 - [ ] Custom directories created with correct ownership and SELinux context
 - [ ] initdb completed successfully with `--data-checksums`
-- [ ] systemd service file updated with correct PGDATA
+- [ ] systemd drop-in override created with correct PGDATA
 - [ ] postgresql.conf applied with tuned parameters
 - [ ] pg_hba.conf configured — no `trust` entries
 - [ ] postgres user password set

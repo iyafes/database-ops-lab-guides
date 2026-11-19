@@ -95,7 +95,7 @@ sequenceDiagram
 
 **`authorization: enabled`** — Enforces username and password authentication for all client connections. Without this, anyone who can reach port 27017 can access all data with no credentials.
 
-**Localhost Exception** — When MongoDB starts for the very first time with `authorization: enabled` but no users exist yet, it permits exactly one unauthenticated connection from localhost. This window is used to create the first admin user. It closes permanently after the first user is created and cannot be reopened without disabling auth and restarting.
+**Localhost Exception** — When MongoDB starts for the very first time with `authorization: enabled` but no users exist yet, it permits unauthenticated connections from localhost, but only to do what is needed to create the first user (plus initiating the replica set). This window is used to create the first admin user. It closes once the first user is created.
 
 **Read Preference** — By default, clients only read from the PRIMARY. SECONDARY nodes do not serve reads unless the client explicitly sets a read preference such as `secondaryPreferred`. This default prevents applications from accidentally reading stale data due to replication lag.
 
@@ -139,10 +139,10 @@ All three lines should appear.
 
 ### 1.3 — Open port 27017 in the UFW firewall
 
-MongoDB's default port is 27017. Replica Set nodes communicate over this port, so it must be open on all VMs.
+MongoDB's default port is 27017. Replica Set nodes communicate over this port, so it must be reachable between the VMs. The rule is limited to the lab subnet; traffic here is not encrypted (no TLS), so for production add TLS and keep MongoDB on a private network.
 
 ```bash
-sudo ufw allow 27017/tcp
+sudo ufw allow from 172.16.93.0/24 to any port 27017 proto tcp
 sudo ufw allow OpenSSH
 sudo ufw enable
 sudo ufw status
@@ -157,7 +157,7 @@ Status: active
 
 To                         Action      From
 --                         ------      ----
-27017/tcp                  ALLOW       Anywhere
+27017/tcp                  ALLOW       172.16.93.0/24
 OpenSSH                    ALLOW       Anywhere
 ```
 
@@ -413,7 +413,7 @@ Common causes of startup failure are covered in the [Troubleshooting](#troublesh
 
 ### 4.1 — Create the admin user (VM1 only)
 
-When MongoDB starts for the first time with `authorization: enabled` but no users exist, it allows one unauthenticated connection from localhost. This is the **localhost exception**. It closes permanently after the first user is created.
+When MongoDB starts for the first time with `authorization: enabled` but no users exist, it allows unauthenticated access from localhost for creating the first user. This is the **localhost exception**. It closes once the first user is created.
 
 Connect without credentials:
 

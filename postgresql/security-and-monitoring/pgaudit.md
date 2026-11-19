@@ -6,17 +6,17 @@
 
 pgaudit is a PostgreSQL extension that provides detailed audit logging. PostgreSQL has built-in logging (`log_statement = 'all'`), but it only records query text — it does not tell you *who* accessed *which object* with *what operation* in a structured, queryable format.
 
-pgaudit fills this gap. Every database operation gets a structured log entry with the user, object, operation type, and full statement. This is what compliance standards like PCI-DSS, HIPAA, and SOX require.
+pgaudit fills this gap. Audited operations get a structured log entry with the audit class, command, object, and full statement (the user and database come from `log_line_prefix`). Detailed audit logging of this kind is commonly used to support compliance requirements such as PCI-DSS, HIPAA, and SOX.
 
 ### Built-in Logging vs pgaudit
 
 | Aspect | Built-in logging | pgaudit |
 |--------|-----------------|---------|
-| What it captures | Raw query text | User, object, operation, statement |
+| What it captures | Raw query text | Class, command, object, statement |
 | Structured format | No | Yes — parseable fields |
 | Object-level filtering | No | Yes — specific tables/views |
 | Role-based audit | No | Yes |
-| Compliance ready | No | Yes |
+| Commonly used for compliance audits | No | Yes |
 
 ### Two Types of Audit
 
@@ -24,7 +24,7 @@ pgaudit fills this gap. Every database operation gets a structured log entry wit
 
 **Object audit** — logs operations on specific objects (tables, views, functions). Controlled by granting permissions to a special audit role. Example: log all SELECT and DELETE on the `employees` table only, regardless of who does it.
 
-Both can be active simultaneously. When an operation matches both, one log entry is written.
+Both can be active simultaneously.
 
 ### Why shared_preload_libraries?
 
@@ -105,7 +105,7 @@ patronictl -c /etc/patroni/patroni.yml show-config | grep -E "shared_preload|log
 
 ### Step 4 — Rolling restart
 
-`shared_preload_libraries` requires a full PostgreSQL restart to take effect. Patroni's rolling restart restarts nodes one at a time — replicas first, then primary — so the cluster stays available throughout.
+`shared_preload_libraries` requires a full PostgreSQL restart to take effect. Patroni's rolling restart restarts the cluster members one at a time rather than stopping everything at once. The primary is briefly unavailable for writes while it restarts.
 
 ```bash
 # On any cluster node
@@ -158,12 +158,12 @@ Session audit captures all operations of specified types — regardless of which
 
 | Value | What it captures |
 |-------|-----------------|
-| `read` | SELECT, COPY FROM |
-| `write` | INSERT, UPDATE, DELETE, TRUNCATE, COPY TO |
-| `ddl` | CREATE, ALTER, DROP, TRUNCATE (schema changes) |
+| `read` | SELECT, COPY TO (source is a relation or query) |
+| `write` | INSERT, UPDATE, DELETE, TRUNCATE, COPY FROM (destination is a relation) |
+| `ddl` | CREATE, ALTER, DROP and other DDL not in `role` (schema changes) |
 | `role` | GRANT, REVOKE, CREATE/ALTER/DROP ROLE |
 | `function` | Function and procedure calls |
-| `misc` | DISCARD, FETCH, CHECKPOINT, VACUUM |
+| `misc` | DISCARD, FETCH, CHECKPOINT, VACUUM, SET |
 | `all` | Everything above |
 | `none` | Disable session audit |
 
@@ -184,13 +184,13 @@ parameters:
 ```
 
 **Why `log_line_prefix: '%m [%p] %u@%d'`?**
-This adds timestamp (`%m`), process ID (`%p`), username (`%u`), and database name (`%d`) to every log line. pgaudit logs the user inside its own `AUDIT:` format, but having it in the line prefix makes grep-based filtering much easier — `grep "AUDIT:" | grep "app_user@"` works only if the prefix contains the username. This is a general logging improvement, not pgaudit-specific — but it makes the most sense to set it here alongside the audit configuration.
+This adds timestamp (`%m`), process ID (`%p`), username (`%u`), and database name (`%d`) to every log line. The `AUDIT:` entry itself does not contain the user name; the user and database appear only if `log_line_prefix` includes them. Having them in the prefix is what makes `grep "AUDIT:" | grep "app_user@"` work. This is a general logging improvement, not pgaudit-specific — but it makes the most sense to set it here alongside the audit configuration.
 
 **Why `ddl,write,role` and not `all`?**
 `read` (SELECT) generates enormous log volume in any active database — every application query gets logged. In practice, you audit writes and schema changes, not reads. Object audit (Step 9) handles sensitive read tracking on specific tables.
 
 **Why `pgaudit.log_catalog: off`?**
-PostgreSQL internally queries system catalogs (`pg_class`, `pg_attribute`, etc.) constantly — for every query it parses. With `log_catalog: on`, these internal queries flood the audit log with noise that has no security value.
+Client tools (for example psql's `\d` commands) query system catalogs such as `pg_class` and `pg_attribute`. With `log_catalog: on`, statements that only touch catalog relations are logged too, which adds noise with little security value.
 
 **Why `pgaudit.log_relation: on`?**
 When a statement touches multiple tables (a JOIN, for example), `log_relation: on` creates a separate audit entry for each table. This makes it possible to search audit logs by table name and find every query that touched it.
@@ -234,8 +234,8 @@ EOF
 **Write:**
 ```bash
 psql -h 172.16.93.139 -p 5000 -U postgres -d practicedb << 'EOF'
-INSERT INTO app_schema.employees (name, department_id, salary)
-  VALUES ('Test User', 1, 50000);
+INSERT INTO app_schema.employees (name, department, salary)
+  VALUES ('Test User', 'Engineering', 50000);
 UPDATE app_schema.employees SET salary = 60000 WHERE name = 'Test User';
 DELETE FROM app_schema.employees WHERE name = 'Test User';
 EOF
@@ -255,7 +255,7 @@ EOF
 A session audit log entry looks like this:
 
 ```
-2026-03-26 18:00:01 +06 [1234] postgres@practicedb LOG:  AUDIT: SESSION,1,1,DDL,CREATE TABLE,TABLE,public.audit_test,"CREATE TABLE audit_test (id SERIAL, data TEXT)",<not logged>
+2026-03-26 18:00:01.123 +06 [1234] postgres@practicedb LOG:  AUDIT: SESSION,1,1,DDL,CREATE TABLE,TABLE,public.audit_test,"CREATE TABLE audit_test (id SERIAL, data TEXT)",<not logged>
 ```
 
 Breaking it down:
@@ -269,12 +269,12 @@ AUDIT: SESSION , 1 , 1 , DDL , CREATE TABLE , TABLE , public.audit_test , "CREAT
          |       |   |    |         |            └─ object type (TABLE/INDEX/ROLE...)
          |       |   |    |         └─ specific command (CREATE TABLE/INSERT/GRANT...)
          |       |   |    └─ audit class (DDL/WRITE/READ/ROLE/FUNCTION)
-         |       |   └─ statement ID within audit entry
-         |       └─ audit entry number within session
+         |       |   └─ sub-statement ID within the statement
+         |       └─ statement ID within the session
          └─ SESSION (vs OBJECT for object audit)
 ```
 
-The line prefix (from `log_line_prefix`) adds timestamp, PID, user, and database before the `AUDIT:` keyword — this is why `log_line_prefix` was set in Step 3.
+The line prefix (from `log_line_prefix`) adds timestamp, PID, user, and database before the `AUDIT:` keyword — this is why `log_line_prefix` was set in Step 6.
 
 ---
 
@@ -329,9 +329,9 @@ psql -h 172.16.93.139 -p 5000 -U postgres -d practicedb -c \
 psql -h 172.16.93.139 -p 5000 -U postgres -d practicedb -c \
   "SELECT count(*) FROM app_schema.employees;"
 
-# INSERT — NOT logged (auditor does not have INSERT on employees)
+# INSERT — NOT logged as OBJECT (auditor has no INSERT on employees); still logged as SESSION because `write` is in pgaudit.log
 psql -h 172.16.93.139 -p 5000 -U postgres -d practicedb -c \
-  "INSERT INTO app_schema.employees (name, department_id, salary) VALUES ('Test', 1, 1000);"
+  "INSERT INTO app_schema.employees (name, department, salary) VALUES ('Test', 'Engineering', 1000);"
 ```
 
 The SELECT entries show `OBJECT` instead of `SESSION`:
@@ -479,7 +479,7 @@ pgaudit essentials:
    - Session audit → pgaudit.log controls which operation classes are logged globally
    - Object audit  → pgaudit.role controls which objects are audited via permission check
 3. shared_preload_libraries → must include pgaudit → requires restart (not just reload)
-4. CREATE EXTENSION → must be run per database → only needs reload
+4. CREATE EXTENSION → must be run per database → plain SQL, no restart or reload needed
 5. In Patroni clusters → all config changes via patronictl edit-config
    Never edit postgresql.conf directly — Patroni overwrites it
 6. pgaudit.log values: read, write, ddl, role, function, misc, all, none

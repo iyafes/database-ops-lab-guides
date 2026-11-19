@@ -30,7 +30,7 @@ This document covers the complete process of installing MongoDB 8.0 on a fresh R
 
 ## Phase 1 — Add MongoDB 8.0 Repository
 
-> **Important:** The senior DBA's reference document used MongoDB 5.0 repository. This is outdated. Use the 8.0 repository below.
+> **Important:** The original reference document used MongoDB 5.0 repository. This is outdated. Use the 8.0 repository below.
 > The `$releasever` variable may not resolve correctly on Rocky Linux. Use hardcoded `9` instead.
 
 ```bash
@@ -143,8 +143,8 @@ ls -laZ /logs/mongodb/
 
 > **Important notes about the configuration:**
 >
-> - `storage.journal.enabled` has been **removed in MongoDB 8.0**. Do not include it — mongod will refuse to start with `Unrecognized option` error.
-> - `cacheSizeGB` is set to `1.5` because PostgreSQL is also running on this server and takes 2GB for shared_buffers. MongoDB's default would claim 50% of RAM (4GB) which would conflict with PostgreSQL.
+> - `storage.journal.enabled` has been **removed in MongoDB 6.1** (journaling is always on, so it is also absent in 8.0). Do not include it — mongod will refuse to start with `Unrecognized option` error.
+> - `cacheSizeGB` is set to `1.5` because PostgreSQL is also running on this server and takes 2GB for shared_buffers. MongoDB's default cache is the larger of 50% of (RAM minus 1GB) or 256MB, which on this server is roughly 3.5GB and would compete with PostgreSQL.
 > - `slowOpThresholdMs: 3000` matches PostgreSQL's `log_min_duration_statement = 3000` for consistency — both databases log operations slower than 3 seconds.
 
 ```bash
@@ -163,7 +163,7 @@ storage:
 
 net:
   port: 27017
-  bindIp: 0.0.0.0
+  bindIp: 127.0.0.1,<db-server-own-ip>
 
 processManagement:
   timeZoneInfo: /usr/share/zoneinfo
@@ -186,8 +186,8 @@ EOF
 | `systemLog.logAppend` | true | Append to existing log file on restart instead of overwriting |
 | `systemLog.logRotate` | reopen | Allows log rotation via `kill -USR1` or `mongod` signal |
 | `storage.dbPath` | `/data/mongodb` | Custom data directory on dedicated NVMe disk |
-| `wiredTiger.cacheSizeGB` | 1.5 | Conservative — PostgreSQL is also running. Default (50% RAM = 4GB) would starve PostgreSQL. |
-| `net.bindIp` | 0.0.0.0 | Accept connections from all IPs. Access control is handled by `authorization: enabled`. |
+| `wiredTiger.cacheSizeGB` | 1.5 | Conservative — PostgreSQL is also running. The default (about 3.5GB here) would compete with PostgreSQL. |
+| `net.bindIp` | 127.0.0.1,<db-server-own-ip> | Listen only on localhost and the server's own address. Do not use `0.0.0.0` outside a closed lab; restrict access with the firewall as well as `authorization: enabled`. |
 | `net.port` | 27017 | Default MongoDB port |
 | `security.authorization` | enabled | Requires authentication. Without this, anyone who can reach port 27017 can access all data. |
 | `operationProfiling.mode` | slowOp | Only log operations slower than the threshold |
@@ -302,7 +302,7 @@ ls -la /data/mongodb/
 
 ### mongod fails — "Unrecognized option: storage.journal.enabled"
 
-Cause: `storage.journal.enabled` was removed in MongoDB 8.0. It was valid in older versions (5.0, 6.0).
+Cause: `storage.journal.enabled` was removed in MongoDB 6.1. It was valid in older versions (5.0, 6.0).
 
 Fix: Remove the `journal` block from `/etc/mongod.conf`. The storage section should look like:
 ```yaml
@@ -412,7 +412,7 @@ Use `readWrite` role for application users — never give application users the 
 - [ ] `mongod --version` shows 8.0.x
 - [ ] Custom directories created with correct ownership (mongod:mongod)
 - [ ] SELinux contexts applied — parent directories fixed first, then MongoDB-specific
-- [ ] mongod.conf created — no `storage.journal.enabled` (removed in 8.0)
+- [ ] mongod.conf created — no `storage.journal.enabled` (removed in 6.1)
 - [ ] `authorization: enabled` in mongod.conf
 - [ ] `cacheSizeGB` set appropriately for shared server (1.5GB when running alongside PostgreSQL)
 - [ ] Service enabled and running

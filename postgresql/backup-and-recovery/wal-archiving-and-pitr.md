@@ -175,7 +175,7 @@ archive_command = 'cp %p /data/wal_archive/%f'
 ```
 
 **Why `wal_level = replica`?**
-`wal_level` controls how much information is written to WAL. The default (`minimal`) does not write enough information for archiving or replication. `replica` writes enough for both streaming replication and WAL archiving. PITR requires at least `replica`.
+`wal_level` controls how much information is written to WAL. The default has been `replica` since PostgreSQL 10 (older versions defaulted to `minimal`), but `minimal` does not write enough information for archiving or replication, so we set it explicitly to make the requirement visible. `replica` writes enough for both streaming replication and WAL archiving. PITR requires at least `replica`.
 
 **Why `archive_command = 'cp %p /data/wal_archive/%f'`?**
 This is the simplest possible archive command — just copy the file. PostgreSQL substitutes `%p` with the full source path and `%f` with just the filename. In production, this would be a pgBackRest or Barman command instead of a plain `cp`.
@@ -457,7 +457,7 @@ graph TD
     B --> C["PostgreSQL runs archive_command<br/>cp segment /data/wal_archive/filename"]
     C --> D{"archive_command<br/>exit code = 0?"}
     D -->|"Yes"| E["Segment marked as archived<br/>PostgreSQL continues"]
-    D -->|"No"| F["PostgreSQL retries<br/>archive_status/failed/"]
+    D -->|"No"| F["PostgreSQL keeps the segment<br/>(archive_status/NAME.ready)<br/>and retries"]
 ```
 
 PostgreSQL checks the exit code of `archive_command`. Exit code 0 means success. Any non-zero exit code means failure — PostgreSQL will retry indefinitely and will not delete or recycle the segment until it is successfully archived.
@@ -539,7 +539,7 @@ WAL Archiving and PITR essentials:
 1. WAL (Write-Ahead Log) — every change is logged before data files are modified
 2. WAL archiving — completed segments are copied to a safe location via archive_command
 3. archive_mode = on + archive_command — minimum config for WAL archiving
-4. wal_level = replica — required for archiving (default 'minimal' is not enough)
+4. wal_level = replica — required for archiving ('minimal' is not enough; the default is 'replica' since PG 10)
 5. PITR requires two things:
    - A base backup (starting point)
    - Archived WAL from base backup time to recovery target time

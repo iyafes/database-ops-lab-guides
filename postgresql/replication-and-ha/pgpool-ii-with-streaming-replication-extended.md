@@ -194,13 +194,13 @@ The data directory lives here on Ubuntu:
 ├── base/             ← actual database files
 ├── global/           ← cluster-wide data (roles, users)
 ├── pg_wal/           ← Write-Ahead Log files
-├── postgresql.conf   ← main configuration file
-├── pg_hba.conf       ← authentication/access rules
 ├── PG_VERSION        ← version number
 └── postmaster.pid    ← running process ID
 ```
 
 > **One Cluster = One Data Directory = One PostgreSQL Instance**
+>
+> On Ubuntu, `postgresql.conf` and `pg_hba.conf` live outside the data directory, in `/etc/postgresql/16/main/`.
 
 ---
 
@@ -303,7 +303,7 @@ sudo nano /etc/postgresql/16/main/pg_hba.conf
 Add at the bottom:
 
 ```
-host    replication     replicator      172.16.93.133/32        md5
+host    replication     replicator      172.16.93.133/32        scram-sha-256
 ```
 
 > | Field | Meaning |
@@ -311,7 +311,7 @@ host    replication     replicator      172.16.93.133/32        md5
 > | `replication` | for WAL streaming connections only |
 > | `replicator` | only this username is allowed |
 > | `172.16.93.133/32` | only from this exact Slave IP |
-> | `md5` | password-based authentication |
+> | `scram-sha-256` | password-based authentication (SCRAM) |
 >
 > `/32` means only this single exact IP. More secure than `/24` which allows the entire subnet.
 
@@ -322,11 +322,12 @@ Save and exit.
 ### Step 4 — Open Firewall Port
 
 ```bash
-sudo ufw allow 5432/tcp
+sudo ufw allow from 172.16.93.133 to any port 5432 proto tcp   # Slave (VM2)
+sudo ufw allow from 172.16.93.134 to any port 5432 proto tcp   # PgPool (VM3), used in Part 2
 sudo ufw reload
 ```
 
-> Opens port 5432 so the Slave can connect. Skip if `ufw` is inactive (`sudo ufw status` to check).
+> Opens port 5432 to the Slave (VM2) and to PgPool (VM3, used in Part 2) only. Any later Slave (such as VM4 in Part 3) needs its own rule. Skip if `ufw` is inactive (`sudo ufw status` to check).
 
 ---
 
@@ -602,7 +603,7 @@ PgPool-II is a **middleware** that sits between the Client and PostgreSQL server
 |---------|-------------|
 | **Query Routing** | Sends WRITE queries to Master, READ queries to Slaves |
 | **Load Balancing** | Distributes SELECT queries between Slaves based on weight |
-| **Connection Pooling** | Reuses existing connections efficiently |
+| **Connection Pooling** | Keeps backend connections open and reuses them across client sessions (concurrent clients are bounded by `num_init_children`) |
 | **Health Check** | Monitors all nodes every few seconds |
 | **SCRAM Auth** | Secure password authentication between Client and PgPool |
 
@@ -626,7 +627,7 @@ Note the `ens33` inet IP as VM3's IP.
 
 ### Step 19 — Install PostgreSQL Client Tools on VM3
 
-VM3 does **not** need a full PostgreSQL server — only client tools for PgPool's internal use.
+VM3 does **not** need a full PostgreSQL server — only client tools (such as `psql`) for testing connectivity from VM3.
 
 ```bash
 sudo apt update
@@ -634,7 +635,7 @@ sudo apt install postgresql-client -y
 psql --version
 ```
 
-> **`postgresql-client`** — installs `psql` and `pg_isready` tools only. PgPool uses these for health checking.
+> **`postgresql-client`** — installs `psql` and `pg_isready` tools only. PgPool itself talks to the backends through its own libpq-based code.
 
 ---
 
@@ -657,7 +658,7 @@ pgpool --version
 
 ```bash
 sudo -i -u postgres
-psql -c "CREATE ROLE appuser WITH SUPERUSER LOGIN PASSWORD '<APP_USER_PASSWORD>';"
+psql -c "CREATE ROLE appuser WITH CREATEDB LOGIN PASSWORD '<APP_USER_PASSWORD>';"
 exit
 ```
 
@@ -705,11 +706,13 @@ host    all    all         172.16.93.134/32    md5
 
 ### Step 24 — Change Password Encryption to md5 on Master
 
-By default, newer PostgreSQL uses `scram-sha-256`. PgPool's password file uses `md5`. They must match, otherwise you get:
+By default, newer PostgreSQL uses `scram-sha-256`. This lab switches the backends to `md5` so that PgPool's backend authentication works with its stored passwords; otherwise you get:
 
 ```
 ERROR: failed to authenticate with backend using SCRAM
 ```
+
+> **Lab shortcut:** `md5` is the older, weaker password method (deprecated since PostgreSQL 18). Client to PgPool connections in this guide use SCRAM (Step 31); the backend leg using `md5` is a simplification for the lab.
 
 ```bash
 sudo nano /etc/postgresql/16/main/postgresql.conf
@@ -899,6 +902,8 @@ child_life_time = 300
 connection_life_time = 600
 ```
 
+> Pgpool can open up to `num_init_children × max_pool` connections to each backend (here 32 × 4 = 128). This must stay within each backend's `max_connections` minus `superuser_reserved_connections` (PostgreSQL default 100, so this lab setting can exceed it under load); lower `max_pool` or raise the backend `max_connections` accordingly.
+
 **Health check:**
 ```
 health_check_period = 10
@@ -938,10 +943,10 @@ sudo nano /etc/pgpool2/pool_hba.conf
 Add at the bottom:
 
 ```
-host    all    all    0.0.0.0/0    scram-sha-256
+host    all    all    172.16.93.0/24    scram-sha-256
 ```
 
-> **Why SCRAM?** SCRAM-SHA-256 is more secure than md5. Passwords are never sent over the network — only a cryptographic proof is exchanged. This protects against password interception attacks.
+> **Why SCRAM?** SCRAM-SHA-256 is more secure than md5. The password itself is not sent over the network — only a cryptographic proof is exchanged, so a captured exchange cannot simply be replayed.
 
 > **Important:** This only affects Client → PgPool connections. PgPool → Backend (VM1/VM2) still uses md5 internally.
 
@@ -1065,8 +1070,8 @@ psql -h 172.16.93.134 -p 9999 -U appuser -d postgres
 ```
 
 ```sql
-CREATE DATABASE tsl_dba;
-\c tsl_dba
+CREATE DATABASE lab_db;
+\c lab_db
 
 CREATE TABLE dba_lst (
     id        SERIAL PRIMARY KEY,
@@ -1076,14 +1081,14 @@ CREATE TABLE dba_lst (
 );
 
 INSERT INTO dba_lst (name, role, joined) VALUES
-    ('Abdullah', 'DBA Intern', '2026-01-01'),
-    ('Masud', 'DBA Intern', '2026-01-01'),
-    ('Intern3', 'DBA Intern', '2026-01-01');
+    ('Alice', 'Trainee', '2026-01-01'),
+    ('Bob', 'Trainee', '2026-01-01'),
+    ('Charlie', 'Trainee', '2026-01-01');
 
 SELECT * FROM dba_lst;
 ```
 
-> **Note:** PostgreSQL converts all unquoted names to lowercase. `TSL_DBA` becomes `tsl_dba`, `DBA_LST` becomes `dba_lst`.
+> **Note:** PostgreSQL converts all unquoted names to lowercase. `LAB_DB` becomes `lab_db`, `DBA_LST` becomes `dba_lst`.
 
 ---
 
@@ -1093,7 +1098,7 @@ On **VM2 (Slave)**:
 
 ```bash
 sudo -i -u postgres
-psql -d tsl_dba -c "SELECT * FROM dba_lst;"
+psql -d lab_db -c "SELECT * FROM dba_lst;"
 exit
 ```
 
@@ -1107,7 +1112,7 @@ On **VM2 (Slave)**:
 
 ```bash
 sudo -i -u postgres
-psql -d tsl_dba
+psql -d lab_db
 ```
 
 ```sql
@@ -1128,9 +1133,9 @@ ERROR:  cannot execute INSERT in a read-only transaction
 Run multiple SELECT queries through PgPool:
 
 ```bash
-psql -h 172.16.93.134 -p 9999 -U appuser -d tsl_dba -c "SELECT * FROM dba_lst;"
-psql -h 172.16.93.134 -p 9999 -U appuser -d tsl_dba -c "SELECT * FROM dba_lst;"
-psql -h 172.16.93.134 -p 9999 -U appuser -d tsl_dba -c "SELECT * FROM dba_lst;"
+psql -h 172.16.93.134 -p 9999 -U appuser -d lab_db -c "SELECT * FROM dba_lst;"
+psql -h 172.16.93.134 -p 9999 -U appuser -d lab_db -c "SELECT * FROM dba_lst;"
+psql -h 172.16.93.134 -p 9999 -U appuser -d lab_db -c "SELECT * FROM dba_lst;"
 psql -h 172.16.93.134 -p 9999 -U appuser -c "SHOW pool_nodes;"
 ```
 
@@ -1179,13 +1184,13 @@ SELECT * FROM dba_lst;
 
 **Master terminal:**
 ```sql
-INSERT INTO dba_lst (name, role, joined) VALUES ('NewIntern', 'DBA Intern', '2026-01-01');
+INSERT INTO dba_lst (name, role, joined) VALUES ('Diana', 'Trainee', '2026-01-01');
 ```
 
 **Slave terminal — immediately:**
 ```sql
 SELECT * FROM dba_lst;
--- NewIntern appears instantly ✅
+-- Diana appears instantly ✅
 ```
 
 ---
@@ -1219,7 +1224,13 @@ sudo nano /etc/postgresql/16/main/pg_hba.conf
 Add:
 
 ```
-host    replication     replicator      172.16.93.135/32        md5
+host    replication     replicator      172.16.93.135/32        scram-sha-256
+```
+
+Also allow VM4 through the firewall on VM1:
+
+```bash
+sudo ufw allow from 172.16.93.135 to any port 5432 proto tcp
 ```
 
 > Only replication entry needed — VM4 is just a Slave, not a query router like PgPool.
@@ -1341,7 +1352,8 @@ Expected:
 
 ```bash
 sudo -i -u postgres
-psql -c "CREATE ROLE appuser_bi WITH SUPERUSER LOGIN PASSWORD '<BI_APP_USER_PASSWORD>';"
+psql -c "CREATE ROLE appuser_bi WITH LOGIN PASSWORD '<BI_APP_USER_PASSWORD>';"
+psql -c "GRANT pg_read_all_data TO appuser_bi;"
 exit
 ```
 
@@ -1365,7 +1377,7 @@ sudo systemctl restart pgpool2
 **Test appuser_bi connection:**
 
 ```bash
-psql -h 172.16.93.134 -p 9999 -U appuser_bi -d tsl_dba
+psql -h 172.16.93.134 -p 9999 -U appuser_bi -d lab_db
 ```
 
 Password: `<BI_APP_USER_PASSWORD>`
@@ -1379,10 +1391,10 @@ Connect succeeds ✅
 **Load balancing with two slaves:**
 
 ```bash
-psql -h 172.16.93.134 -p 9999 -U appuser -d tsl_dba -c "SELECT * FROM dba_lst;"
-psql -h 172.16.93.134 -p 9999 -U appuser -d tsl_dba -c "SELECT * FROM dba_lst;"
-psql -h 172.16.93.134 -p 9999 -U appuser -d tsl_dba -c "SELECT * FROM dba_lst;"
-psql -h 172.16.93.134 -p 9999 -U appuser -d tsl_dba -c "SELECT * FROM dba_lst;"
+psql -h 172.16.93.134 -p 9999 -U appuser -d lab_db -c "SELECT * FROM dba_lst;"
+psql -h 172.16.93.134 -p 9999 -U appuser -d lab_db -c "SELECT * FROM dba_lst;"
+psql -h 172.16.93.134 -p 9999 -U appuser -d lab_db -c "SELECT * FROM dba_lst;"
+psql -h 172.16.93.134 -p 9999 -U appuser -d lab_db -c "SELECT * FROM dba_lst;"
 psql -h 172.16.93.134 -p 9999 -U appuser -c "SHOW pool_nodes;"
 ```
 
@@ -1392,7 +1404,7 @@ Expected: VM2 and VM4 `select_cnt` roughly equal, Master stays at 0 ✅
 
 ```bash
 sudo -i -u postgres
-psql -d tsl_dba -c "SELECT * FROM dba_lst;"
+psql -d lab_db -c "SELECT * FROM dba_lst;"
 exit
 ```
 
@@ -1429,7 +1441,7 @@ On **VM2**:
 sudo passwd postgres
 ```
 
-Set a password (e.g., `pg123`). This is only needed once for SSH key setup.
+Set a temporary password. This is only needed once for SSH key setup.
 
 ---
 
@@ -1448,26 +1460,38 @@ FAILED_NODE_ID=$3
 NEW_MASTER_HOST=$4
 NEW_MASTER_PORT=$5
 NEW_MASTER_ID=$6
+OLD_PRIMARY_ID=$7
 
 LOG="/var/log/pgpool2/failover.log"
 NEW_MASTER_DATA="/var/lib/postgresql/16/main"
 
 echo "$(date): Failover triggered" >> $LOG
 echo "$(date): Failed node: $FAILED_NODE_HOST (ID: $FAILED_NODE_ID)" >> $LOG
+
+# Only promote when the failed node was the primary (a failed standby needs no promotion)
+if [ "$FAILED_NODE_ID" != "$OLD_PRIMARY_ID" ]; then
+    echo "$(date): Failed node was not the primary - nothing to promote" >> $LOG
+    exit 0
+fi
+
 echo "$(date): Promoting: $NEW_MASTER_HOST (ID: $NEW_MASTER_ID)" >> $LOG
 
-ssh -T -o StrictHostKeyChecking=no postgres@$NEW_MASTER_HOST \
+ssh -T postgres@$NEW_MASTER_HOST \
     "/usr/lib/postgresql/16/bin/pg_ctl promote -D $NEW_MASTER_DATA"
 
 echo "$(date): Promotion command sent to $NEW_MASTER_HOST" >> $LOG
 ```
+
+> Lab-only script: the old primary is not fenced, and there is no `follow_primary_command`, so the remaining standby (VM4) keeps following the old primary and must be rebuilt. It is not production-ready.
 
 > Each variable PgPool sends to the script:
 > | Variable | Value | Meaning |
 > |----------|-------|---------|
 > | `$1` | `172.16.93.132` | Failed node's IP |
 > | `$4` | `172.16.93.133` | New master's IP |
+> | `$5` | `5432` | New master's port |
 > | `$6` | `1` | New master's node ID |
+> | `$7` | `0` | Old primary's node ID (used to skip promotion when a standby fails) |
 
 Save: `Ctrl+X` → `Y` → `Enter`
 
@@ -1529,7 +1553,7 @@ sudo nano /etc/pgpool2/pgpool.conf
 Find `failover_command` and set:
 
 ```
-failover_command = '/etc/pgpool2/failover.sh %h %p %d %H %P %m'
+failover_command = '/etc/pgpool2/failover.sh %h %p %d %H %r %m %P'
 ```
 
 > | Parameter | Meaning |
@@ -1538,8 +1562,9 @@ failover_command = '/etc/pgpool2/failover.sh %h %p %d %H %P %m'
 > | `%p` | Failed node port |
 > | `%d` | Failed node ID |
 > | `%H` | New master IP |
-> | `%P` | New master port |
+> | `%r` | New master port |
 > | `%m` | New master ID |
+> | `%P` | Old primary node ID |
 
 Save and restart:
 
@@ -1584,7 +1609,7 @@ node 1 | 172.16.93.133 | primary ← new Master ✅
 
 **Test write on new Master:**
 ```bash
-psql -h 172.16.93.134 -p 9999 -U appuser -d tsl_dba
+psql -h 172.16.93.134 -p 9999 -U appuser -d lab_db
 ```
 
 ```sql
@@ -1681,7 +1706,7 @@ VM1 `primary`, VM2 and VM4 `standby` = original state restored ✅
 |-----------|-----------|
 | Editing `pg_hba.conf` | Use `systemctl reload` — no downtime |
 | Editing `postgresql.conf` | Use `systemctl restart` — but stop PgPool first |
-| Any PostgreSQL restart | Stop PgPool first to prevent accidental failover |
+| Any PostgreSQL restart | Stop PgPool first to prevent accidental failover (lab rule; in production, detach the node with `pcp_detach_node` or use a maintenance procedure instead) |
 | Adding new Slave to PgPool | Stop PgPool, edit config, reset status file, start PgPool |
 
 ## Quick Reference Commands

@@ -297,7 +297,7 @@ umask 077                      # Set umask (files: 600, directories: 700)
 
 ## System Shutdown and Reboot
 
-**init** - Change runlevel
+**init** - Change runlevel (legacy; on systemd systems `systemctl poweroff` and `systemctl reboot` are the modern equivalents)
 ```bash
 init 0                         # Halt the system (complete stop)
 init 6                         # Reboot the system
@@ -391,11 +391,11 @@ SSH uses public-key cryptography to authenticate the remote system and users. It
 2. Server responds and TCP handshake is established
 3. Server sends identification string (protocol version, etc.)
 4. Client sends its identification information
-5. Server sends its public key to client
-6. If server not in client's "known_hosts" file, user is prompted to trust it
-7. Client generates random session key and encrypts it with server's public key
-8. Server decrypts session key using its private key
-9. Connection is now secured using the session key
+5. Client and server negotiate algorithms and perform a key exchange (Diffie-Hellman style, e.g. ECDH), so both sides derive the same session keys without ever sending them
+6. Server proves its identity by signing the exchange with its host key; if the host key is not in the client's "known_hosts" file, the user is prompted to trust it
+7. Both sides verify the signature and derive symmetric session keys from the shared secret
+8. Connection is now encrypted and integrity-protected using the session keys
+9. User authentication happens next, inside the encrypted channel
 
 **Authentication Steps:**
 1. Client sends authentication information (e.g., public key) to server
@@ -444,9 +444,8 @@ sudo vim /etc/ssh/sshd_config  # Edit SSH config file
 2. Change default SSH port: `Port 2345`
 3. Disable root login: `PermitRootLogin no`
 4. Configure idle timeout: `ClientAliveInterval 300`
-5. Disable SSH protocol 1: `Protocol 2`
-6. Allow specific users only: `AllowUsers User1 User2`
-7. Disable password-based login (optional)
+5. Allow specific users only: `AllowUsers User1 User2`
+6. Disable password-based login (optional): `PasswordAuthentication no`
 
 **Restart SSH service after changes:**
 ```bash
@@ -459,11 +458,13 @@ sudo systemctl restart ssh     # Apply configuration changes
 
 **Configure UFW (Uncomplicated Firewall):**
 ```bash
-sudo ufw allow from any to any port 2222 proto tcp  # Allow SSH on custom port
+sudo ufw allow 2345/tcp        # Allow SSH on the custom port set in Step 3
 sudo ufw allow 22/tcp          # Allow SSH on default port 22
 sudo ufw allow ssh             # Allow SSH service
 sudo ufw status                # Check firewall status
 sudo ufw enable                # Enable firewall
 ```
+
+> Keep port 22 open until you have confirmed a login on the new port works. On RHEL-family systems the service is named `sshd` instead of `ssh`.
 
 ---

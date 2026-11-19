@@ -1,6 +1,6 @@
 # PostgreSQL 17 — Production Setup & Migration Guide
 **Rocky Linux 9 | Binary Install | Standalone DB Server**
-**Migration: PG 18 (Docker, Combined Server) → PG 17 (Binary, New DB Server)**
+**Migration: PG 18 (Docker, Old Docker Server) → PG 17 (Binary, New DB Server)**
 
 ---
 
@@ -12,7 +12,7 @@
 
 ## ⚠️ A Critical Note About the Migration First
 
-Your combined server runs **PostgreSQL 18**, and the new server will have **PostgreSQL 17** installed. This is a **major version downgrade**.
+Your old Docker server runs **PostgreSQL 18**, and the new server will have **PostgreSQL 17** installed. This is a **major version downgrade**.
 
 PostgreSQL can be upgraded with the `pg_upgrade` tool, but it **cannot be downgraded**. So the only safe method here is:
 
@@ -25,9 +25,9 @@ pg_restore (restore into PG17)
 ```
 
 With this method:
-- ✅ No data loss
+- ✅ No writes are lost, because the app is stopped before the final dump
 - ✅ Downtime is controlled: you decide when to take the app down
-- ✅ Rollback is easy: the combined server's DB is never stopped during the migration
+- ✅ Rollback is easy: the old Docker server's DB is never stopped during the migration
 - ⚠️ If any PG 18-specific feature or syntax is used, the restore may fail with errors. Ask the Senior DBA first
 
 ---
@@ -60,9 +60,9 @@ New server ready ✓
 Part B — Migration (Downtime Window)
 ──────────────────────────────────────
 [Downtime starts]
-Stop app containers on the combined server
+Stop app containers on the old Docker server
        ↓
-Final pg_dump on the combined server
+Final pg_dump on the old Docker server
        ↓
 Transfer the dump file to the new server
        ↓
@@ -150,7 +150,7 @@ This is a PostgreSQL-specific step; MongoDB and MySQL do not have it. Being inst
 
 What happens while `initdb` runs:
 - The `/var/lib/pgsql/17/data/` directory is created
-- System tables are created (pg_database, pg_user and so on)
+- System catalogs are created (pg_database, pg_class and so on)
 - Config files are created (`postgresql.conf`, `pg_hba.conf`)
 - The WAL (Write-Ahead Log) directory is created
 
@@ -233,8 +233,8 @@ maintenance_work_mem = 64MB
 > | Parameter | Rule of thumb |
 > |-----------|---------------|
 > | `shared_buffers` | 25% of total RAM |
-> | `effective_cache_size` | 75% of total RAM |
-> | `work_mem` | (RAM - shared_buffers) / max_connections |
+> | `effective_cache_size` | 50-75% of total RAM |
+> | `work_mem` | upper bound: (RAM - shared_buffers) / max_connections |
 > | `maintenance_work_mem` | 5% of RAM, max 1GB |
 >
 > Check the server's RAM: `free -h`
@@ -259,7 +259,7 @@ max_wal_senders = 3
 wal_keep_size = 1GB
 ```
 
-`wal_level = replica`: how much information is written into the WAL. At the `replica` level there is enough information for replication and PITR (Point-in-Time Recovery). Without it, pgBackRest will not work.
+`wal_level = replica`: how much information is written into the WAL. At the `replica` level there is enough information for replication and PITR (Point-in-Time Recovery). WAL archiving (and so pgBackRest) does not work with `wal_level = minimal`; `replica` is the default.
 
 `archive_mode = on`: WAL files will be archived.
 
@@ -333,13 +333,13 @@ vi /var/lib/pgsql/17/data/pg_hba.conf
 local     all         postgres                             peer
 
 # All users from localhost, with a password
-host      all         all         127.0.0.1/32             md5
+host      all         all         127.0.0.1/32             scram-sha-256
 
 # From the backend/application server
-host      all         all         <backend-server-ip>/32   md5
+host      all         all         <backend-server-ip>/32   scram-sha-256
 
 # From the DBA's machine, via pgAdmin or psql
-host      all         postgres    <dba-machine-ip>/32      md5
+host      all         postgres    <dba-machine-ip>/32      scram-sha-256
 ```
 
 ### What the authentication methods mean
@@ -347,8 +347,10 @@ host      all         postgres    <dba-machine-ip>/32      md5
 | Method | What it does | When to use |
 |--------|---------|-------------|
 | `peer` | Allows without a password if the OS user's name matches the PG user name | Local only, for the DBA |
-| `md5` | Verifies with a password hash | All remote connections |
-| `scram-sha-256` | More secure than md5; recommended on PG 14+ | According to the Senior DBA's preference |
+| `md5` | Older password method, weaker than SCRAM | Legacy only; avoid in new setups |
+| `scram-sha-256` | Salted, iterated challenge-response; the default password hashing on PG 14+ | All remote connections |
+
+> **Note:** roles restored from the old server keep their stored password hashes. A role whose password is stored as an `md5` hash cannot log in through a `scram-sha-256` rule, so re-set such passwords (`ALTER ROLE ... PASSWORD`) after the restore.
 
 > **⚠️ To be replaced:**
 > - `<backend-server-ip>`: the IP of the backend application server. Get it from the DevOps/backend team.
@@ -483,7 +485,7 @@ vi /etc/pgbackrest/pgbackrest.conf
 ```ini
 [global]
 # Where to keep backups
-repo1-path=/var/lib/pgbackrest
+repo1-path=/var/lib/pgbackrest   # same host as the database: fine for a first setup, but it does not survive loss of this server; use a separate repository host or object storage for real protection
 
 # How many full backups to keep (older ones are deleted)
 repo1-retention-full=2
@@ -587,10 +589,10 @@ WAL archiving runs continuously, so you can restore to any moment between the fu
 
 ## What to Do Before Migrating
 
-### 1. Check the data size on the source (Combined Server)
+### 1. Check the data size on the source (Old Docker Server)
 
 ```bash
-# On the combined server
+# On the old Docker server
 docker exec <pg-container-name> psql -U postgres -c "\l+"
 ```
 
@@ -611,10 +613,10 @@ You need enough space in `/tmp` or another location for the dump file. Keep at l
 ### 3. Test network connectivity
 
 ```bash
-# Ping the combined server from the new DB server
+# Ping the old Docker server from the new DB server
 ping <combined-server-ip>
 
-# Test whether you can SSH from the combined server to the new DB server
+# Test whether you can SSH from the old Docker server to the new DB server
 ssh user@<new-db-server-ip> "echo 'connection ok'"
 ```
 
@@ -629,7 +631,7 @@ Before starting the migration, tell the application team and stakeholders the ex
 ### Overview: what you do on which server
 
 ```
-Combined Server                    New DB Server
+Old Docker Server                    New DB Server
 (running)                          (ready, but empty)
     │                                    │
     │── pre-check ──────────────────────▶│
@@ -655,10 +657,10 @@ Combined Server                    New DB Server
 
 **Do this before the actual downtime: a practice run.**
 
-Take a test dump on the combined server without stopping the app. This dump will not be used in production, but it tells you how long the dump takes and how long the transfer takes. With that information you can estimate how long the downtime window will need to be.
+Take a test dump on the old Docker server without stopping the app. This dump will not be used in production, but it tells you how long the dump takes and how long the transfer takes. With that information you can estimate how long the downtime window will need to be.
 
 ```bash
-# On the combined server
+# On the old Docker server
 time docker exec <pg-container-name> pg_dumpall \
   -U postgres \
   --clean \
@@ -689,10 +691,10 @@ If any ERROR appears, note it and tell the Senior DBA. Any PG 18-specific syntax
 
 **The time has come. Tell the application team.**
 
-On the combined server, stop the application containers; do not stop the database container:
+On the old Docker server, stop the application containers; do not stop the database container:
 
 ```bash
-# On the combined server
+# On the old Docker server
 # Stop only the frontend and backend
 docker stop <frontend-container-name> <backend-container-name>
 
@@ -710,7 +712,7 @@ docker ps
 With the app stopped, no new data is coming in; take the dump now. This is the authoritative final backup.
 
 ```bash
-# On the combined server
+# On the old Docker server
 
 # Option A: dump all databases together (recommended)
 docker exec <pg-container-name> pg_dumpall \
@@ -724,7 +726,7 @@ echo "Dump completed: $(ls -lh /tmp/pg_final_*.sql)"
 
 **What `pg_dumpall` does:** exports all databases, all users (roles) and all permissions into a single SQL file. Restoring this one file on the new server gives you everything.
 
-**`--clean`:** drops existing objects first during the restore. It is not really needed on a new server, but it is good for keeping the restore idempotent.
+**`--clean`:** drops existing objects first during the restore. On a brand-new empty server it is not needed, but here the dry-run restore may already have populated the new server, and `--clean` lets the final restore replace it. It can also print harmless errors for built-in objects such as the `postgres` role.
 
 **`--if-exists`:** when used with `--clean`, checks whether the object exists before dropping it, which avoids errors.
 
@@ -744,7 +746,7 @@ echo "Dump completed: $(ls -lh /tmp/pg_final_*.sql)"
 ### Migration Step 4: Transfer the Dump File
 
 ```bash
-# From the combined server to the new DB server
+# From the old Docker server to the new DB server
 scp /tmp/pg_final_*.sql user@<new-db-server-ip>:/tmp/
 
 # Verify that the transfer succeeded
@@ -805,16 +807,22 @@ SELECT COUNT(*) FROM <important_table_name>;
 \q
 ```
 
-**Run the same counts on the combined server and compare:**
+**Run the same counts on the old Docker server and compare:**
 
 ```bash
 docker exec <pg-container-name> psql -U postgres -d <database_name> \
   -c "SELECT COUNT(*) FROM <important_table_name>;"
 ```
 
-If the counts match in both places, the migration succeeded.
+If the counts match in both places for the critical tables, that is a good basic check (it does not prove that every row is identical).
 
-> **⚠️ If the counts differ:** roll back: bring the app containers up on the combined server again and investigate.
+Also refresh the planner statistics on the new server, since a plain-SQL `pg_dumpall` restore does not bring optimizer statistics along:
+
+```bash
+sudo -u postgres vacuumdb --all --analyze-only
+```
+
+> **⚠️ If the counts differ:** roll back: bring the app containers up on the old Docker server again and investigate.
 
 ---
 
@@ -841,11 +849,11 @@ If everything is fine, **the downtime is over.**
 If there is a problem at any step:
 
 ```bash
-# On the combined server: bring the app containers up again
+# On the old Docker server: bring the app containers up again
 docker start <frontend-container-name> <backend-container-name>
 ```
 
-The combined server's DB container was never stopped, so rollback only means pointing the app back at the old connection. No data is lost.
+The old Docker server's DB container was never stopped, so, as long as the application has not yet written to the new server, rollback only means pointing the app back at the old connection and nothing is lost. Once the application has written to the new database, those writes exist only there.
 
 ---
 
@@ -1001,13 +1009,13 @@ rm -rf /var/log/postgresql
 - [ ] **The DB server's own IP**: get it with `ip addr show`
 - [ ] **The backend server's IP**: get it from the DevOps/backend team
 - [ ] **Your DBA machine's IP**: `curl ifconfig.me`
-- [ ] **The name of the PG container on the combined server**: `docker ps`
+- [ ] **The name of the PG container on the old Docker server**: `docker ps`
 - [ ] **Which databases need to be migrated**: the backend team will confirm
 - [ ] **The application user's name and password**: get them from the backend team or create new ones
 - [ ] **The server's RAM**: check with `free -h`, for the memory config
 - [ ] **Timezone**: check with `timedatectl`
 - [ ] **Memory config values**: get the company standard from the Senior DBA
-- [ ] **Authentication method (md5 vs scram-sha-256)** — Senior DBA preference
+- [ ] **Authentication method** — `scram-sha-256` unless a client cannot support it
 - [ ] **Downtime window**: agree it with the application team
 - [ ] **Rollback decision maker**: decide in advance who will decide on rollback if there is a problem in the migration
 

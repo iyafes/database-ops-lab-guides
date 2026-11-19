@@ -26,10 +26,10 @@ When you run `pg_basebackup`, PostgreSQL does the following internally:
 
 ```
 1. Forces a checkpoint      → flushes all dirty pages to disk
-2. Enters backup mode       → starts writing special WAL records to keep backup consistent
+2. Starts the backup        → records the start WAL location and prepares backup_label
 3. Streams data files       → copies files over the replication protocol
 4. Streams WAL              → captures all WAL generated during the backup
-5. Exits backup mode        → backup is complete and consistent
+5. Stops the backup         → forces a WAL switch, so the backup is complete and consistent
 ```
 
 This is why `pg_basebackup` requires a **replication connection**, not a regular database connection — it uses the same streaming protocol that replicas use.
@@ -548,15 +548,15 @@ sed -i "s|^hba_file|#hba_file|" /tmp/basebackup_plain/postgresql.conf
 sed -i "s|^ident_file|#ident_file|" /tmp/basebackup_plain/postgresql.conf
 ```
 
-### PostgreSQL fails to start — archive_mode
+### Archive errors after start — archive_mode
 
 **Symptom in log:**
 ```
-FATAL: archive_command is not set but archive_mode is enabled
+LOG: archive command failed with exit code ...
 ```
 or pgBackRest errors about missing stanza configuration.
 
-**Cause:** `archive_mode = on` tells PostgreSQL to archive every WAL segment using `archive_command`. If pgBackRest is not configured (or the stanza does not exist on this server), archiving fails and PostgreSQL refuses to continue.
+**Cause:** `archive_mode = on` tells PostgreSQL to archive every WAL segment using `archive_command`. If pgBackRest is not configured (or the stanza does not exist on this server), archiving fails, PostgreSQL keeps retrying and WAL piles up in `pg_wal`, and the log fills with archive errors. Turning archiving off is the simple fix for a standalone restore copy.
 
 **Fix:**
 ```bash

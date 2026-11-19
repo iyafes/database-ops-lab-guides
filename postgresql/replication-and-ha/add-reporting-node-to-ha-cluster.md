@@ -134,9 +134,9 @@ sudo firewall-cmd --list-ports
 
 > **This is the most critical difference from adding a regular node.**
 >
-> In a standard etcd cluster, every member participates in leader election and quorum voting. If you add node4 as a normal voting member, the cluster would require 3 out of 4 nodes for quorum instead of 2 out of 3 — making the cluster less fault-tolerant (you could only lose 1 node instead of 1).
+> In a standard etcd cluster, every member participates in leader election and quorum voting. If you add node4 as a normal voting member, the cluster would require 3 out of 4 members for quorum instead of 2 out of 3. You would still tolerate only 1 failed member, so the fourth voter adds no fault tolerance and only raises the number of members that must stay reachable.
 >
-> A **learner** member receives all data from the cluster but does not vote. The quorum calculation stays at the original 3 nodes. node4 gets full data sync without affecting cluster stability.
+> A **learner** member receives all data from the cluster but does not vote. The quorum calculation stays at the original 3 voting members. node4 gets full data sync without affecting cluster stability.
 
 ### Step 1 — Register node4 as an etcd Learner
 
@@ -373,7 +373,6 @@ etcd3:
     - 172.16.171.128:2379
     - 172.16.171.129:2379
     - 172.16.171.130:2379
-    - 172.16.171.132:2379
 
 bootstrap:
   dcs:
@@ -396,9 +395,9 @@ bootstrap:
     - data-checksums
 
   pg_hba:
-    - host replication replicator 127.0.0.1/32 md5
-    - host replication replicator 172.16.171.0/24 md5
-    - host all all 0.0.0.0/0 md5
+    - host replication replicator 127.0.0.1/32 scram-sha-256
+    - host replication replicator 172.16.171.0/24 scram-sha-256
+    - host all all 172.16.171.0/24 scram-sha-256
 
   users:
     admin:
@@ -429,17 +428,20 @@ tags:
   nofailover: true
   noloadbalance: true
   clonefrom: false
-  nosync: false
+  nosync: true
 EOF
 ```
 
 **Tag explanations — these are what make node4 a reporting node:**
 
+The `etcd3.hosts` list names only the three voting members. Patroni on node4 does not need to talk to its local learner: a learner does not serve client writes or linearizable reads, which Patroni relies on.
+
+
 | Tag | Value | Effect |
 |---|---|---|
 | `nofailover` | `true` | Patroni will never promote node4 to Primary during failover. Even if node1, node2, and node3 all go down, node4 will not take over. This protects the reporting workload from suddenly becoming a Primary under write load. |
 | `noloadbalance` | `true` | HAProxy reads this tag via the Patroni REST API. When this is `true`, HAProxy excludes node4 from the replica pool on port 5001, so no application read traffic is routed here. |
-| `nosync` | `false` | Keeps node4 eligible for synchronous replication if the cluster is ever configured to use it. Set to `true` only if you explicitly want to exclude node4 from sync replication. |
+| `nosync` | `true` | Excludes node4 from being chosen as a synchronous standby, so a reporting node can never sit in the commit path if the cluster is later configured for synchronous replication. |
 
 **Why `sudo -u postgres tee`:** The Patroni service runs as the `postgres` user. The config file must be readable by that user. Writing it as `postgres` directly avoids a separate `chown` step.
 
@@ -533,10 +535,10 @@ Expected output — node4 should appear as `Replica` with `Lag = 0`:
 To confirm the `nofailover` and `noloadbalance` tags are applied:
 
 ```bash
-patronictl -c /etc/patroni/patroni.yml list -v
+patronictl -c /etc/patroni/patroni.yml list -e
 ```
 
-node4 should show `Tags: nofailover, noloadbalance`.
+node4 should show `nofailover` and `noloadbalance` in the Tags column.
 
 ### Verify HAProxy Does Not Route Traffic to node4
 
@@ -601,10 +603,12 @@ User:     <read_user>
 >
 > ```sql
 > -- Run on Primary via HAProxy port 5000
-> CREATE USER analyst WITH PASSWORD 'analyst_password';
+> CREATE USER analyst WITH PASSWORD '<ANALYST_PASSWORD>';
 > GRANT CONNECT ON DATABASE your_database TO analyst;
 > GRANT USAGE ON SCHEMA public TO analyst;
 > GRANT SELECT ON ALL TABLES IN SCHEMA public TO analyst;
+> -- Tables created later need default privileges (for the role that creates them):
+> ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO analyst;
 > ```
 
 ---
@@ -616,11 +620,11 @@ User:     <read_user>
 patronictl -c /etc/patroni/patroni.yml list
 
 # Check node4 tags (nofailover, noloadbalance)
-patronictl -c /etc/patroni/patroni.yml list -v
+patronictl -c /etc/patroni/patroni.yml list -e
 
 # Check replication lag on node4
 psql -h 172.16.171.131 -p 5000 -U postgres -c \
-  "SELECT client_addr, state, pg_wal_lsn_diff(sent_lsn, replay_lsn) AS lag_bytes FROM pg_stat_replication WHERE client_addr = '172.16.171.132';"
+  "SELECT client_addr, state, pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS lag_bytes FROM pg_stat_replication WHERE client_addr = '172.16.171.132';"
 
 # Check etcd learner status
 etcdctl --endpoints=http://172.16.171.128:2379,http://172.16.171.129:2379,http://172.16.171.130:2379 \

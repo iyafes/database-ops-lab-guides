@@ -163,6 +163,7 @@ Database  →  Schema  →  Table  →  Column
 
 ```sql
 -- Layer 1: allow connecting to the database
+-- (PUBLIC has CONNECT by default; this grant matters once PUBLIC's CONNECT is revoked)
 GRANT CONNECT ON DATABASE practicedb TO readonly_role;
 
 -- Layer 2: allow seeing objects inside the schema
@@ -177,7 +178,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA app_schema
 ```
 
 **Why `ALTER DEFAULT PRIVILEGES`?**
-`GRANT SELECT ON ALL TABLES` only applies to tables that exist right now. If a new table is created later, `readonly_role` would not have access to it. `ALTER DEFAULT PRIVILEGES` fixes this by automatically granting `SELECT` on any future tables created in that schema.
+`GRANT SELECT ON ALL TABLES` only applies to tables that exist right now. If a new table is created later, `readonly_role` would not have access to it. `ALTER DEFAULT PRIVILEGES` fixes this by automatically granting `SELECT` on future tables created in that schema. Default privileges apply only to objects created by the role that ran the command (here `postgres`); for tables created by another role, use `ALTER DEFAULT PRIVILEGES FOR ROLE <creator> IN SCHEMA ...`.
 
 **Assign `readonly_role` to `dev_user`:**
 
@@ -400,8 +401,8 @@ CREATE ROLE limited_user WITH LOGIN PASSWORD '<LIMITED_PASSWORD>'
 **File format:**
 ```
 TYPE   DATABASE   USER      ADDRESS         METHOD
-host   all        all       0.0.0.0/0       md5
-host   replication replicator 172.16.93.0/24 md5
+host   all        all       172.16.93.0/24  scram-sha-256
+host   replication replicator 172.16.93.0/24 scram-sha-256
 local  all        postgres                  peer
 ```
 
@@ -411,7 +412,7 @@ local  all        postgres                  peer
 | `DATABASE` | Database name, or `all`, or `replication` |
 | `USER` | Role name, or `all` |
 | `ADDRESS` | IP/CIDR range (only for `host` type) |
-| `METHOD` | `md5` = password, `peer` = OS user match, `trust` = no auth |
+| `METHOD` | `scram-sha-256` = password (recommended; `md5` is the older, weaker password method), `peer` = OS user match, `trust` = no auth |
 
 **In a Patroni cluster, never edit `pg_hba.conf` directly.** Patroni overwrites it on restart. Always use `patronictl edit-config`:
 
@@ -422,11 +423,11 @@ patronictl -c /etc/patroni/patroni.yml edit-config
 Under the `pg_hba:` section:
 ```yaml
 pg_hba:
-  - host replication replicator 127.0.0.1/32 md5
-  - host replication replicator 172.16.93.0/24 md5
-  - host all all 0.0.0.0/0 md5
+  - host replication replicator 127.0.0.1/32 scram-sha-256
+  - host replication replicator 172.16.93.0/24 scram-sha-256
+  - host all all 172.16.93.0/24 scram-sha-256
   # Add a rule to restrict a specific user to a specific subnet
-  - host practicedb dev_user 172.16.93.0/24 md5
+  - host practicedb dev_user 172.16.93.0/24 scram-sha-256
 ```
 
 Rules are evaluated **top to bottom** — the first matching rule wins. More specific rules must come before more general ones.
@@ -462,6 +463,9 @@ GRANT readonly_role TO eng_user;
 ```
 
 **Test RLS:**
+
+This is a demonstration of the mechanism, not a security boundary: `app.current_dept` is a session setting the user can change themselves, so a real design would derive the filter from something the user cannot set (for example `current_user` or a lookup table).
+
 ```bash
 psql -h 172.16.93.139 -p 5000 -U eng_user -d practicedb
 ```
@@ -481,7 +485,7 @@ SELECT * FROM app_schema.employees;
 ```
 
 **Important behavior:**
-- Table owners and superusers bypass RLS by default
+- Superusers (and roles with `BYPASSRLS`) always bypass RLS; table owners bypass it by default
 - To force RLS even for the table owner:
 ```sql
 ALTER TABLE app_schema.employees FORCE ROW LEVEL SECURITY;
@@ -513,7 +517,8 @@ GRANT USAGE ON SCHEMA app_schema TO some_role;
 -- User has access to current tables but not future ones
 GRANT SELECT ON ALL TABLES IN SCHEMA app_schema TO readonly_role;
 
--- Fix: add this so future tables are also covered
+-- Fix: add this so future tables created by the current role are also covered
+-- (for another creator role, add FOR ROLE <creator>)
 ALTER DEFAULT PRIVILEGES IN SCHEMA app_schema
     GRANT SELECT ON TABLES TO readonly_role;
 ```

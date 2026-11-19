@@ -73,7 +73,7 @@ Each VM: **3 GB RAM · 20 GB disk · 2 vCPU**
 | 7000 | TCP | Inter-node gossip |
 | 10000 | TCP | REST API — nodetool uses this |
 | 9180 | TCP | Prometheus metrics — scyllatop uses this |
-| 19042 | TCP | Shard-aware CQL |
+| 19042 | TCP | Shard-aware CQL (used by shard-aware drivers) |
 
 ---
 
@@ -117,6 +117,7 @@ Rocky Linux uses `firewall-cmd`, not `ufw`.
 ```bash
 sudo firewall-cmd --permanent --add-port=9042/tcp
 sudo firewall-cmd --permanent --add-port=9142/tcp
+sudo firewall-cmd --permanent --add-port=19042/tcp
 sudo firewall-cmd --permanent --add-port=7000/tcp
 sudo firewall-cmd --permanent --add-port=7001/tcp
 sudo firewall-cmd --permanent --add-port=7199/tcp
@@ -125,6 +126,8 @@ sudo firewall-cmd --permanent --add-port=9180/tcp
 sudo firewall-cmd --reload
 ```
 
+> Lab shortcut: these ports are open to any source. In production, restrict inter-node ports (7000, 7001, 7199, 10000, 9180) to the cluster nodes and monitoring hosts.
+
 Verify:
 ```bash
 sudo firewall-cmd --list-ports
@@ -132,7 +135,7 @@ sudo firewall-cmd --list-ports
 
 ### 1.4 — Disable SELinux
 
-SELinux in `enforcing` mode can block ScyllaDB socket operations. Set it to `permissive` for this lab.
+SELinux in `enforcing` mode can block ScyllaDB socket operations. Set it to `permissive` for this lab (lab-only shortcut; in production keep SELinux enforcing and fix the policy instead).
 
 ```bash
 sudo setenforce 0
@@ -165,7 +168,7 @@ sudo sysctl -p /etc/sysctl.d/99-scylladb.conf
 ```
 
 - `vm.swappiness = 1` — nearly disables swap. ScyllaDB keeps data in RAM; swapping causes severe latency spikes.
-- `vm.dirty_ratio = 80` — OS flushes dirty pages to disk only when 80% of RAM is dirty, improving write throughput.
+- `vm.dirty_ratio = 80` — OS flushes dirty pages to disk only when 80% of RAM is dirty. This is a lab-only choice; ScyllaDB does its own direct I/O, so check ScyllaDB's tuning recommendations before using it in production.
 - `net.core.rmem_max` / `wmem_max` — increases network buffer sizes for CQL traffic.
 
 ### 1.6 — Open File Limit for ScyllaDB User
@@ -447,7 +450,7 @@ EOF
 | Parameter | Purpose |
 |-----------|---------|
 | `cluster_name` | Must be identical on all nodes. Nodes reject joining if cluster names differ. |
-| `num_tokens` | Number of virtual tokens this node owns in the ring. 256 is the recommended default — more tokens means more even data distribution. |
+| `num_tokens` | Number of virtual tokens this node owns in the ring. 256 is the value used in this lab; more tokens means more even data distribution. |
 | `listen_address` | IP this node uses for inter-node communication (gossip, streaming). |
 | `rpc_address` | IP this node listens on for client CQL connections. |
 | `broadcast_rpc_address` | IP this node advertises to other nodes via gossip so clients know how to reach it. |
@@ -559,7 +562,7 @@ UN  172.16.93.156   522 KB     256     ?       eac274fd-...                     
 UN  172.16.93.157   618 KB     256     ?       04374c3c-...                          rack1
 ```
 
-> **Note on `Owns ?`:** The `?` in the Owns column is expected behavior in ScyllaDB 2025.4 when the Tablets feature is enabled. It does not indicate a problem. The cluster is functioning correctly.
+> **Note on `Owns ?`:** The `?` in the Owns column is expected here: ownership depends on the keyspace (and on tablets, where enabled), so it is not shown without one. It does not indicate a problem; use `nodetool status <keyspace>` for per-keyspace ownership.
 
 ---
 
@@ -594,8 +597,8 @@ By default, `system_auth` (the keyspace that stores roles and credentials) has `
 ```sql
 ALTER KEYSPACE system_auth
 WITH REPLICATION = {
-    'class': 'SimpleStrategy',
-    'replication_factor': 3
+    'class': 'NetworkTopologyStrategy',
+    'datacenter1': 3
 };
 EXIT;
 ```
@@ -623,12 +626,12 @@ cqlsh 172.16.93.155 9042 -u admin -p your_secure_password
 ```sql
 CREATE KEYSPACE lab_keyspace
 WITH REPLICATION = {
-    'class': 'SimpleStrategy',
-    'replication_factor': 3
+    'class': 'NetworkTopologyStrategy',
+    'datacenter1': 3
 };
 ```
 
-`replication_factor: 3` means every row is stored on all 3 nodes. Any single node can satisfy a read, and the cluster can tolerate 1 node failure without data loss.
+`'datacenter1': 3` means every row is stored on 3 replicas in `datacenter1`, which is all 3 nodes here (the name must match `dc=` in `cassandra-rackdc.properties`). Any single node can satisfy a read, and the cluster can tolerate 1 node failure without data loss.
 
 **Create table:**
 
